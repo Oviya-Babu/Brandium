@@ -1,0 +1,43 @@
+# Secrets / environment
+.env
+.env.local
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+poetry.lock.bak
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+next-env.d.ts
+frontend/playwright-report/
+frontend/test-results/
+
+# Build artifacts
+dist/
+build/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Terraform
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.backup
+infra/terraform/.terraform.lock.hcl
+
+# Zone identifier files from Windows-mounted downloads
+*:Zone.Identifier

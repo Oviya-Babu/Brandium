@@ -1,0 +1,155 @@
+name: brandium
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+asyncpg://brandium:brandium@postgres:5432/brandium
+  REDIS_URL: redis://redis:6379/0
+  QDRANT_URL: http://qdrant:6333
+  S3_ENDPOINT_URL: http://minio:9000
+  S3_ACCESS_KEY: brandium
+  S3_SECRET_KEY: brandium-dev-secret
+  S3_BUCKET_NAME: brandium-assets
+  OLLAMA_BASE_URL: http://ollama:11434
+  OLLAMA_LLM_MODEL: qwen3:8b-instruct
+  OLLAMA_EMBEDDING_MODEL: bge-m3
+  ENVIRONMENT: local
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: brandium
+      POSTGRES_PASSWORD: brandium
+      POSTGRES_DB: brandium
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U brandium -d brandium"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: brandium
+      MINIO_ROOT_PASSWORD: brandium-dev-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Vector database, collection-per-tenant isolation (Technology Stack v1.1 §6, INV-19).
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  # Primary self-hosted LLM + embedding runtime (Technology Stack v1.1 §14/§15).
+  # Serves Qwen 3 8B Instruct and BAAI bge-m3. CPU inference works for local
+  # development; GPU passthrough is a host-level Docker/Compose configuration
+  # (see technology_stack.md v1.1 §25 for the production GPU-hosting note).
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  backend:
+    build: ./backend
+    environment:
+      <<: *backend-env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      ollama:
+        condition: service_started
+
+  worker:
+    build: ./backend
+    command: ["celery", "-A", "workers.celery_app", "worker", "--loglevel=info"]
+    environment:
+      <<: *backend-env
+    volumes:
+      - ./backend:/app
+      - ./workers:/workers
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+
+  # Observability stack — optional locally (Technology Stack §24): run with
+  # `docker compose --profile observability up`.
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: ["observability"]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:latest
+    profiles: ["observability"]
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: brandium-dev
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  qdrant_data:
+  ollama_data:
+  grafana_data:

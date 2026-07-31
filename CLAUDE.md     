@@ -1,0 +1,555 @@
+# CLAUDE.md
+## Brandium — Claude Code Implementation Operating Manual
+
+**Document type:** Engineering handbook / operating manual for Claude Code sessions
+**Status:** Binding for all implementation work
+**Source of truth:** PRD v1.0, Phase 0–7 Architecture (FROZEN, + addenda), Technology Stack v1.0
+**Authority model:** This document does not define architecture. It enforces architecture that is already frozen. If anything here appears to conflict with the frozen documents, the frozen documents win, and the conflict must be raised to the human architect before proceeding — never silently resolved by Claude Code.
+
+---
+
+## 0. How to Use This Document
+
+This file is read at the start of every Claude Code session working on this repository. It exists so that no session needs to re-derive the architecture from scratch, and so that no session — regardless of how the request is phrased — drifts from what Phases 0–7 already decided.
+
+**Rule of first resort:** when in doubt about *what* to build, this document's Project Context (§1) and Architectural Invariants (§2) are authoritative summaries. When in doubt about *how* to build it, Engineering Principles (§3), Security Requirements (§4), and AI Guardrails (§5) govern. When in doubt about *what to build next*, the Implementation Roadmap (§10) governs — never intuition about what "seems useful."
+
+**Rule of last resort:** if a request would require changing something Phases 0–7 mark FROZEN, Claude Code does not silently comply and does not silently refuse — it stops, states the conflict explicitly, and asks the human architect for an explicit decision before writing any code. See §9.4.
+
+---
+
+## 1. Project Context
+
+### 1.1 What BrandGuard AI Is
+
+BrandGuard AI is an **Enterprise Brand Decision Intelligence Platform (EBDIP)** — a multi-tenant SaaS product that evaluates AI-generated and human-generated marketing content (text, image, video) against an organization's own codified brand identity, and produces an explainable, evidence-traceable verdict on whether that content authentically represents the organization.
+
+It is **not** a content generator, **not** a replacement for human creative judgment, and **not** a generic AI writing/design tool. It is a governance and validation layer that sits between content creation and publication.
+
+It is **organization-agnostic**: any tenant can onboard by supplying its own brand assets. There is no structural dependency on any specific customer, including any hackathon problem-statement source (DR-009).
+
+### 1.2 The Problem It Solves
+
+Generative AI optimizes for fluency and coherence, not brand uniqueness. As organizations lean on AI for marketing content, output drifts toward generic, interchangeable patterns — **Brand Identity Drift**. No existing category of tool (grammar checkers, design tools, general LLMs, CV models, post-publication analytics) answers: *"Does this content authentically represent our brand, why or why not, and what should change?"*
+
+### 1.3 The Core Architectural Commitment (Non-Negotiable)
+
+**Evidence-first decision-making.** This is the platform's actual defensibility, and it governs every implementation decision:
+
+1. AI/ML models extract **structured, confidence-scored Evidence** from content.
+2. A **deterministic, versioned Decision function** converts Evidence + Policy into a score and verdict.
+3. A language model **narrates** the resulting evidence graph in natural language — it never originates a judgment.
+
+If an implementation approach makes it easier to blur these three steps together — for example, letting a worker's LLM call directly influence a score, or letting a narration prompt see policy weights — that approach is wrong regardless of how much simpler it seems. See §2 and §5.
+
+### 1.4 The Reasoning Pipeline, End to End
+
+```
+Organization onboards
+  → uploads brand assets (guidelines, logos, design systems, historical campaigns)
+  → Brand Genome Compiler produces a draft Genome
+  → Human review & sign-off (DR-006 — mandatory, non-negotiable)
+  → Genome version activated (immutable snapshot, pointed-to via Brand.active_genome_version_id)
+
+Content uploaded (text / image / video)
+  → Applicability Determination (which Genome elements are even in scope for this asset)
+  → Planning (which workers must run for the in-scope elements)
+  → Worker Execution (per-modality AI workers produce Observations)
+  → Evidence Normalization & Fusion (Observations → Evidence, mapped to specific Assertions)
+  → Completeness Verification (every in-scope Assertion has a terminal outcome)
+  → AnalysisRun reaches `complete` (handoff to Decision Engine) or `failed`
+
+Decision Engine (deterministic, versioned)
+  → Evidence Aggregation (Assertion → Component → Category → Overall, confidence-weighted)
+  → Policy Evaluation (tenant-specific weights, Critical Rules, verdict thresholds)
+  → Decision (score + verdict), reproducible given (Evidence, Genome version, Policy version, decision_function_version)
+
+Recommendation Generation
+  → Deterministic trigger + deterministic priority (Policy-driven)
+  → LLM narrates the wording only — schema-constrained, evidence-grounded, never free generation
+
+Report (persisted read model)
+  → Materializes Decision + Evidence + Recommendations, reachable via analysis_run_id
+  → Genome/Policy version pinned permanently (DR-005)
+  → Reviewed by a Marketing Manager: approve for publication or return for revision
+```
+
+### 1.5 The Six Bounded Contexts
+
+| # | Context | Owns |
+|---|---|---|
+| 1 | Identity & Access | Organization, Workspace, User, RoleAssignment, Membership, InternalOperator |
+| 2 | Brand Governance | Brand, BrandGenome, Policy, BrandHistory |
+| 3 | Campaign & Asset Management | Campaign, Asset, AssetVersion |
+| 4 | Analysis & Decision | AnalysisRun, Observation, Evidence, Decision, Recommendation |
+| 5 | Reporting | Report (review/flag lifecycle only) |
+| 6 | Platform Governance | AuditLogEntry, AISlopKnowledgeBase |
+
+No entity spans two contexts. No context spans a tenant-isolation boundary. Module structure in code should mirror this (§6).
+
+### 1.6 Multi-Tenancy in One Sentence
+
+Every tenant-scoped entity carries a denormalized `org_id`, traces back to exactly one Organization, and no read or write may ever resolve using another tenant's identifier — enforced independently at the domain, access, execution, and observability layers (defense in depth, not a single filter).
+
+### 1.7 Why Explainability Is Structural, Not a UI Feature
+
+A user must never be able to see a score without being one click away from the Evidence behind it. This is possible because the entire aggregation tree is **derived, not stored** — it is always exactly reconstructable from (Evidence set, pinned Genome version, pinned Policy version, `decision_function_version`). The product surface's job is to expose that reconstruction, never to compute anything new on its own.
+
+---
+
+## 2. Architectural Invariants (Non-Negotiable)
+
+These are drawn directly from the frozen PRD, Decision Records (DR-001 through DR-009), and Phases 0–7. **They may never be relaxed, worked around, "temporarily" disabled, or reinterpreted for developer convenience, demo purposes, or shipping speed.** Any code that violates one of these is a defect, full stop, regardless of whether it "works."
+
+### 2.1 Evidence, Decision, and Narration
+
+- **INV-01** — No model, including any LLM, ever originates a brand-alignment judgment. Workers produce Observations and confidence-scored Evidence only.
+- **INV-02** — The Decision function is deterministic and versioned. Given identical (Evidence set, `genome_version_id`, `policy_version_id`, `decision_function_version`), recomputing a Decision must yield an identical `score` and `verdict`, always. Evidence itself may come from probabilistic models, but every Evidence item carries an explicit, calibrated confidence value (DR-002).
+- **INV-03** — LLM output used anywhere in the decision-adjacent path (Recommendation `text`, Report narration) is schema-constrained and template-bound, never free generation.
+- **INV-04** — Recommendation *triggering* and *priority* are deterministic and covered by `decision_function_version`; Recommendation *text* is explicitly not — this distinction must remain visible in code and in any audit surface.
+- **INV-05** — Score and confidence are never blended into a single number. Every reported figure carries its confidence alongside it, distinctly.
+- **INV-06** — No Recommendation may exist without at least one `related_evidence_id`. No ungrounded recommendations, ever.
+- **INV-07** — Absence of Evidence for an Assertion is never treated as a negative signal. "Not covered," "Not Applicable," and "misaligned" are three distinct states and must never collapse into one at any layer, including the presentation layer.
+
+### 2.2 Versioning and Immutability
+
+- **INV-08** — A BrandGenome version is a complete, self-contained, immutable snapshot once pointed-to by `Brand.active_genome_version_id`. It is never a delta. Any edit produces a new `draft`.
+- **INV-09** — Exactly one active Genome version and exactly one active Policy version can exist per Brand at any time, enforced *by construction* via a single nullable FK pointer — never by a `status = active` convention that could have two rows simultaneously marked active.
+- **INV-10** — Every AnalysisRun immutably pins `genome_version_id` and `policy_version_id` at creation; these fields are never updated after creation (DR-005). A Report generated from that run permanently reflects those pinned versions, even after the Brand's active Genome/Policy later changes.
+- **INV-11** — `decision_function_version` is a single monotonically increasing integer covering, as one atomic unit: the Alignment Value Function, all aggregation formulas, the Confidence Aggregation Rule and Coverage Discount Function, the Critical Rule override-resolution mechanism (including the Applicability interaction clause), and the Recommendation triggering/priority formula. Any change to any one of these is a version bump — never a silent change.
+- **INV-12** — Evidence and Observations are immutable once recorded. A correction is always a new AnalysisRun, never a mutation of an existing one.
+- **INV-13** — AssetVersion is append-only. Concurrent uploads to the same Asset never conflict — each is simply its own version.
+- **INV-14** — A Genome/Policy version's Category/Component taxonomy is platform-level and forward-only. Existing versions are never retroactively reshaped.
+
+### 2.3 Human Governance Gates
+
+- **INV-15** — A Brand Genome version cannot become active for scoring without explicit human sign-off (`activated_by` required, non-null) — DR-006, BR-007. No fully-automated onboarding path may ever bypass this.
+- **INV-16** — No feedback loop from flagged Reports (or any calibration finding) is ever automatic. A flagged Report never auto-alters a Genome, Policy, or `decision_function_version`. All learning is mediated through an explicit, human-authored new draft re-entering the existing lifecycle.
+- **INV-17** — Brand Administrator approval (Genome/Policy) and Marketing Manager approval (publication) are two distinct authorities. One is never substitutable for the other in code, UI, or workflow.
+
+### 2.4 Tenant Isolation
+
+- **INV-18** — Organization is the sole tenant isolation boundary. Every tenant-scoped entity carries denormalized `org_id`, and every tenant-scoped read/write is authorized against it directly — never via a full parent-chain join as the only check.
+- **INV-19** — Vector store isolation is collection-per-tenant, plus a mandatory application-layer check rejecting any result whose tenant identifier doesn't match the requester. Metadata-filtering alone is explicitly rejected as insufficient (DR-003).
+- **INV-20** — The AI Slop Knowledge Base is populated exclusively from public/synthetic corpora. No automated ingestion path from any tenant's private data may ever exist, regardless of whether that tenant's content happens to be independently public elsewhere (DR-004).
+- **INV-21** — InternalOperator (BrandGuard's own staff) is structurally excluded from all tenant-scoped content, with **no exception** — not for support, not for incident response, not for any circumstance. Any legitimate support need is met by a tenant-side actor granting a scoped RoleAssignment, never by the platform reaching in from outside.
+- **INV-22** — A RoleAssignment's scope tier (`organization` | `workspace` | `brand`) is always evaluated at its actual tier. Privilege inheritance flows one direction only (broad → narrow); it never flows upward or sideways. No actor may grant themselves a RoleAssignment that increases their own effective privilege — that grant must come from a second, distinct actor with equal-or-broader authority.
+
+### 2.5 Pipeline Integrity
+
+- **INV-23** — A worker never evaluates an Assertion outside its assigned scope, and never outside the Applicability Set for the current run.
+- **INV-24** — Three distinct terminal outcomes exist per in-scope Assertion: evidence outcome, attempted-no-signal outcome, worker-failure outcome — plus Not Applicable for out-of-scope Assertions. These are never conflated, anywhere, including in aggregation, storage, or UI.
+- **INV-25** — A worker-failure outcome on an in-scope Assertion within a **Required** Genome category routes the AnalysisRun to `failed` (terminal). A Decision is never computed from a run with a silently-missing Required category. `complete` and `failed` are both terminal states with no outgoing transitions.
+- **INV-26** — A Critical Rule may only fire or not-fire against a Genome element that has at least one applicable, covered Assertion contributing an aggregate value for the run. If the target has zero applicable or zero covered elements, the rule is recorded as **not evaluated** — never treated as "value = 0."
+- **INV-27** — Fusion never double-counts near-identical redundant Observations as independent corroborating Evidence.
+- **INV-28** — A Work Unit's state is monotonic (`assigned → executing → {succeeded, failed, timed_out}`) and never reverts. A `succeeded` Work Unit is never re-opened; a retry creates a new attempt, never a mutation.
+- **INV-29** — One Work Unit's failure, slowness, or retry activity never alters another Work Unit's state, inputs, or outputs. One AnalysisRun's execution never affects another's.
+- **INV-30** — Organization suspension halts new AssetVersions, new AnalysisRuns, and new Genome/Policy activations. It never interrupts an AnalysisRun already `running` — that run proceeds to its natural terminal outcome under the existing pipeline rules, unaffected.
+
+### 2.6 Fail-Safe Behavior
+
+- **INV-31** — Any check that cannot be conclusively resolved (an authorization evaluation, a Completeness Verification gate, a validation rule) resolves to denial or failure, never to a permissive default. Uncertainty is never treated as permission.
+- **INV-32** — The default state for any actor with no applicable RoleAssignment is total denial. No implicit trust; every action is re-evaluated against current RoleAssignments on every crossing, not cached as a standing grant.
+
+### 2.7 Audit
+
+- **INV-33** — Audit history is never rewritten, truncated, or deleted, for any Organization, enforced at the database privilege level (no `UPDATE`/`DELETE` grants on the audit table for the application role), not merely by application discipline.
+- **INV-34** — Every governance action — activation, flag, suspension, RoleAssignment grant/revoke, Membership transition, including a *denied* self-escalation attempt — is attributable to a specific actor and is itself an auditable event, never silently dropped.
+
+**If a task appears to require violating any INV-xx rule, stop and escalate per §9.4. Do not implement a version that "mostly" satisfies the invariant.**
+
+---
+
+## 3. Engineering Principles
+
+### 3.1 Architecture Style
+
+- **Modular monolith**, structured directly along the six Bounded Contexts (§1.5). Each context is a Python package with a clear public interface; cross-context calls go through that interface, never by reaching into another context's internal modules or tables directly.
+- **Domain-Driven Design** — Organization, Brand, BrandGenome, Policy, AnalysisRun, Decision, etc. are modeled as the domain entities Phase 0 defines, with the aggregate boundaries and cardinalities Phase 0 specifies. No new aggregate roots, no removed invariants, no unauthorized field additions to frozen entities.
+- **Clean/hexagonal layering** within each context: domain model → application/service layer → infrastructure (persistence, external APIs) → API layer. Business rules (e.g., the aggregation formulas in Phase 2 §3) live in the domain/service layer, never in a route handler or ORM model method.
+- **Dependency inversion**: the Decision Engine, Explainability Engine, and Applicability Resolution logic depend on abstractions (repository interfaces, evidence-source interfaces), not on concrete infrastructure — this is what keeps the "regenerate the aggregation tree on demand" design (Phase 2 §5.3) testable without a database.
+- **Repository pattern** for all persistence access — no direct ORM queries scattered through service/business logic.
+- **Service layer** owns orchestration of multi-step domain operations (e.g., Genome activation's three-step atomic operation in Phase 0 §3.6); it is the only layer allowed to compose multiple repository calls into one business transaction.
+
+### 3.2 Data and Types
+
+- **Pydantic models** for every domain shape that crosses a boundary (API request/response, internal service contracts, worker Observation/Evidence payloads). Pydantic is also FastAPI's native validation layer — one model definition serves both purposes, per the Technology Stack rationale.
+- **Strict typing** everywhere. `mypy` must pass with no `# type: ignore` used to silence a genuine mismatch — only for documented, narrow library-typing gaps.
+- **Immutable domain models** wherever the architecture specifies immutability (Genome versions once pointed-to, Evidence, Observations, AssetVersion, Report's projected content). Use frozen/immutable dataclasses or Pydantic's frozen config for these; mutability must be an explicit, deliberate exception (e.g., Report's four review-overlay fields), never a default.
+- **Exhaustive error handling** — every external call (LLM API, embedding API, storage, database) has explicit success/failure/timeout handling mapped to the Phase 3/4 outcome taxonomy where applicable (worker-failure vs. attempted-no-signal vs. evidence outcome). No bare `except: pass`.
+
+### 3.3 SOLID, Applied Concretely Here
+
+- **S**: A worker's responsibility is producing Observations for its assigned Genome categories — never scoring, never policy evaluation.
+- **O**: New Genome categories, worker types, or Assertion types should be addable without modifying the Decision Engine's core aggregation logic (NFR-009) — the aggregation formulas operate generically over weighted children at each level.
+- **L**: Any worker implementation must be substitutable for another of the same conceptual role without the Orchestrator (Phase 4) needing to know the difference.
+- **I**: Repository interfaces are scoped per aggregate (GenomeRepository, PolicyRepository, AnalysisRunRepository), not one giant `DataAccess` interface.
+- **D**: The Decision Engine depends on an `EvidenceProvider`-shaped abstraction, not directly on a SQL table.
+
+### 3.4 What "Simple" Means Here
+
+The Technology Stack document's guiding principle applies to application code too: **choose the simplest approach that genuinely satisfies the frozen requirement, with an explicit upgrade path — never the simplest approach that ignores the requirement.** A shortcut that produces the right shape of output but skips a governance gate, an isolation check, or a reproducibility guarantee is not "simple," it is wrong.
+
+---
+
+## 4. Security Requirements
+
+Security is implemented alongside every feature, never retrofitted. A feature is not "done" until its security requirements are done.
+
+### 4.1 Foundational Posture
+
+- **Zero Trust** — every request is authenticated and authorized on its own terms, every time; no boundary crossing is assumed safe by proximity, prior success, or actor seniority (Phase 6 §1).
+- **Defense in depth** — tenant isolation, in particular, must be enforced independently at the domain layer (org_id rooting + Postgres Row-Level Security), the access layer (RoleAssignment scope evaluation), the execution layer (per-AnalysisRun Work Unit isolation), and the observability layer. A failure at one layer must never be the only thing standing between a request and another tenant's data.
+- **Least privilege** — every RoleAssignment defaults to the narrowest scope tier that satisfies the actual need. Every database role and every service credential is scoped to only what that component requires.
+- **Secure by default** — no access without an explicit RoleAssignment; no endpoint reachable without authentication unless deliberately and explicitly public (and documented as such).
+- **Fail-safe** — per INV-31/32, any inconclusive check denies. This must be the literal default branch in authorization code, not an edge case handled last.
+
+### 4.2 AuthN / AuthZ
+
+- **Authentication** via Auth0 (or the configured provider) — JWT validation on every request; no endpoint skips this "for convenience" or "for local testing" in a way that could ship.
+- **Authorization** is a custom evaluation service built directly against the frozen RoleAssignment model (`scope_tier`, `scope_id`, `role`) — evaluate at the narrowest matching tier (brand, else workspace, else organization); permissions from multiple applicable assignments union; there is no deny-override construct, so no conflict-arbitration logic should be invented.
+- **RBAC**, not a generic ABAC framework, matches what Phase 5/6 actually specify — do not introduce policy-engine complexity (e.g., OPA) until the documented Future Evolution trigger is met.
+- **Self-escalation prevention (INV-22)** must be enforced in the authorization service itself, not only in the UI: any grant that would expand the *requesting* actor's own effective access is rejected unless performed by a second, distinct, equal-or-broader-authority actor.
+- **Membership-status precondition**: an action by a User whose Membership is not `active` (e.g., `suspended`, `removed`) must be denied even if a RoleAssignment nominally still exists — Membership gates RoleAssignment's effect.
+
+### 4.3 Tenant Isolation Implementation
+
+- Every tenant-scoped table carries `org_id` with a Postgres **Row-Level Security** policy — this is the DB-enforced form of DR-003's "application-layer verification step," not a substitute for the application-layer check but a second, independent layer beneath it.
+- Vector store isolation is **collection-per-tenant**, never a shared collection with metadata filtering as the only guard, per INV-19.
+- Every service-layer read/write path must be testable for cross-tenant leakage — tenant-isolation tests are a required category (§7), not optional.
+
+### 4.4 Input / Output Validation
+
+- All uploaded content (brand assets and analyzed content alike) is **untrusted input**, including assets from legitimate, authenticated tenants (Phase 6 §1's trust-boundary table: nothing crosses from "Human ↔ Platform" except through validated authoring/upload paths).
+- OCR output, video subtitles, extracted document text, and any other content-derived text are **never** passed to an LLM as instructions — always as data, inside a schema-constrained call. This is a first-class threat, not a hardening afterthought (PRD §13).
+- All LLM output is validated against its expected Pydantic schema before use; a response that fails schema validation is retried (bounded) or routed to a failure outcome — never silently coerced into looking valid.
+- Standard input validation (size limits, MIME-type verification, structural validation) on every upload endpoint.
+
+### 4.5 File and Media Handling
+
+- Uploaded image/video files are processed in **sandboxed** workers to contain malformed-file attack vectors (malicious codecs, decompression bombs) — this containment is a Work Unit-level property, consistent with Phase 4's isolation principle.
+- Virus/malware scanning is applied to uploads before they are made available to any downstream worker or stored durably.
+- Transient working files (extracted frames, decoded text) live on container-local ephemeral disk only, cleaned deterministically at the end of each Work Unit — never a shared temp volume across workers (Technology Stack §21).
+
+### 4.6 Standard Web/API Hardening
+
+- Parameterized queries / ORM-level binding only — no string-interpolated SQL, ever.
+- CSRF, XSS, and SQLi prevention are baseline requirements on every endpoint and every rendered surface, not features to add later.
+- Rate limiting on all public-facing endpoints, tuned per endpoint sensitivity (auth endpoints stricter than read endpoints).
+- No hardcoded secrets anywhere in source. Secrets load via the configured secrets mechanism (AWS Secrets Manager in cloud, `.env` — git-ignored — locally) at startup/config-load time only.
+- No insecure defaults: TLS/HTTPS assumed at the infrastructure boundary; cookies/tokens use secure/httpOnly/sameSite defaults; no debug mode, verbose stack traces, or permissive CORS shipped to a non-local environment.
+- **No authentication disabled "for convenience," no demo shortcut that weakens any of the above.** If a demo needs to be faster to set up, that is solved with seed data and scripts (§6), never with a security bypass.
+
+### 4.7 Audit Logging
+
+- Every governance action (Genome/Policy activation, RoleAssignment grant/revoke, Membership transition, Report flag, Organization lifecycle transition) writes an AuditLogEntry, including denied/failed authorization attempts of governance significance (e.g., a blocked self-escalation).
+- The audit table's application-role DB grants exclude `UPDATE`/`DELETE` — enforced at the database, not only by application code discipline (INV-33).
+
+---
+
+## 5. AI Guardrails
+
+These are the concrete implementation rules that keep §2.1's invariants true in actual code.
+
+### 5.1 Hard Boundaries
+
+- **A worker never returns a score, verdict, or recommendation priority.** A worker's output type is Observation → normalized Evidence (`alignment_indicator`, `confidence`, `assertion_reference`) — nothing else. If a worker's LLM call is tempted to also say "so overall this scores 72," that output field does not exist in the schema and must be discarded, not stored.
+- **The Decision Engine never calls an LLM.** Its inputs are Evidence (already produced), the pinned Genome, and the pinned Policy. It is pure, deterministic computation (Phase 2 §3–§5) — no network call, no model inference, inside decision computation itself.
+- **No LLM ever receives Policy weights, Critical Rule thresholds, or another worker's findings as input.** Per Phase 6 §2's trust-boundary table, the Platform ↔ AI Workers boundary explicitly excludes these from ever reaching a worker.
+- **Recommendation text generation is schema-constrained narration only.** The prompt for narration receives: the triggering Component, the specific covered Assertions and Evidence that pulled it down, and the already-computed priority. It does not receive, and cannot alter, whether the recommendation exists or its priority value.
+- **No LLM writes directly to the database.** Every LLM call's output is validated against a Pydantic schema in application code, and only the validated, structured result is persisted through the normal repository/service layer — never a raw model response written through unvalidated.
+
+### 5.2 Prompt Injection Defense
+
+- Treat every piece of content-derived text (OCR, transcripts, extracted document text, user-supplied filenames/metadata) as **data**, never as instructions, in every LLM call that touches it. Use structural separation (explicit data-boundary markers, dedicated message fields) — never simple string concatenation into an instruction-bearing prompt.
+- LLM calls used for evidence extraction and narration must not be capable of executing tool calls, browsing, or taking any action beyond returning a schema-validated text/structured response. No agentic loop, no autonomous multi-step tool use, per the Technology Stack's explicit rejection of general agent frameworks for this reason.
+- Log (structurally, not with raw untrusted content bypassing sanitization) enough about each LLM call to support the audit trail without ever storing raw, unsanitized untrusted input in a way that could itself become an injection vector downstream (e.g., in an admin dashboard rendering logs unsanitized).
+
+### 5.3 Context Isolation
+
+- A worker's LLM call for one tenant's AnalysisRun must never include content, Genome Assertions, or history from another tenant. Since workers are invoked per-AnalysisRun and AnalysisRun is tenant-scoped and pinned, this should fall out of correct tenant-scoped data access — but must be explicitly tested (§7), not just assumed.
+- The Distinctiveness Worker may *read* the shared AI Slop Knowledge Base as a reference corpus; nothing from any tenant's BrandHistory is ever written to it (INV-20).
+
+### 5.4 Structured Output Discipline
+
+- Every AI-facing call (worker evidence extraction, recommendation narration) defines its expected output as a Pydantic model **first**, then constructs the prompt to satisfy that schema — schema-first, not prompt-first.
+- Validate every response against its schema before use. On validation failure: retry within a bounded attempt count, then route to the appropriate Phase 3 outcome (worker-failure), never silently accept a malformed or partially-valid response.
+- Confidence values from any AI call must fall within the defined calibrated range (Phase 1 §10, rule 4) — validate this as part of schema validation, not as an afterthought.
+
+### 5.5 Determinism Boundary Discipline
+
+- Any code path that is supposed to be part of `decision_function_version` (Phase 2 §8.1's five covered mechanisms, plus the Applicability/Critical Rule addendum) must be pure and side-effect-free with respect to non-deterministic inputs (no LLM calls, no wall-clock-dependent branching, no unordered-set iteration affecting output). Property-based tests (Hypothesis) are the required verification method for this (§7).
+- Any code path that is *not* supposed to be reproducible (Recommendation text wording) must be clearly separated in code (module/service boundary) from the deterministic path, mirroring Phase 2 §6.3's explicit distinction.
+
+---
+
+## 6. Project Structure
+
+```
+brandguard/
+├── CLAUDE.md                     # this file
+├── docs/                         # architecture documents (read-only source of truth)
+│   ├── prd/
+│   ├── phase-0-business-domain/
+│   ├── phase-1-brand-intelligence/
+│   ├── phase-2-decision-architecture/
+│   ├── phase-3-ai-pipeline/
+│   ├── phase-4-platform-engineering/
+│   ├── phase-5-enterprise-saas/
+│   ├── phase-6-security-governance/
+│   ├── phase-7-product-experience/
+│   ├── addenda/                  # Phase 0/2 addenda, pre-phase corrections
+│   └── technology-stack.md
+├── backend/
+│   ├── src/
+│   │   ├── identity_access/          # Bounded Context 1
+│   │   ├── brand_governance/         # Bounded Context 2
+│   │   ├── campaign_asset/           # Bounded Context 3
+│   │   ├── analysis_decision/        # Bounded Context 4
+│   │   │   ├── domain/               # Observation, Evidence, Decision, Recommendation entities
+│   │   │   ├── applicability/        # Applicability Resolution (Phase 3 §2)
+│   │   │   ├── planning/             # Planner (Phase 3 §3)
+│   │   │   ├── workers/              # Visual, Verbal, Compliance & Accessibility, Distinctiveness, Values & Mission
+│   │   │   ├── fusion/               # Evidence Normalization & Fusion (Phase 3 §5)
+│   │   │   ├── decision_engine/      # Aggregation, Confidence Propagation, Verdict, Critical Rules (Phase 2)
+│   │   │   ├── recommendation/       # Trigger/priority (deterministic) + narration (generative)
+│   │   │   └── explainability/       # On-demand reasoning-chain reconstruction (Phase 2 §7)
+│   │   ├── reporting/                # Bounded Context 5 — Report read model, review/flag lifecycle
+│   │   ├── platform_governance/      # Bounded Context 6 — AuditLogEntry, AISlopKnowledgeBase
+│   │   ├── orchestration/            # Phase 4 — Work Unit lifecycle, Execution Plan, Orchestrator
+│   │   ├── shared_kernel/            # cross-context value objects ONLY (org_id types, IDs, enums) — no business logic
+│   │   └── api/                      # FastAPI routers — thin, delegate to service layer
+│   ├── tests/
+│   │   ├── unit/
+│   │   ├── integration/
+│   │   ├── property/                 # Hypothesis-based reproducibility tests for the Decision Engine
+│   │   └── tenant_isolation/         # dedicated cross-tenant-leakage test suite
+│   └── pyproject.toml
+├── workers/                          # Celery worker entrypoints, one module per worker type + dedicated queue
+├── frontend/
+│   ├── src/
+│   │   ├── app/                      # Next.js routes, role-appropriate views (Phase 5/7 §1)
+│   │   ├── components/
+│   │   └── lib/                      # typed API client, shared with backend Pydantic-derived types
+│   └── tests/                        # Playwright
+├── shared/                           # types/schemas genuinely shared between frontend and backend (generated from Pydantic/OpenAPI where possible)
+├── infra/
+│   ├── terraform/
+│   └── docker/
+├── scripts/                          # seed data, local setup, migration helpers — never security bypasses
+└── IMPLEMENTATION_STATUS.md          # living log of completed milestones — see §9.2
+```
+
+**Rule:** a Bounded Context's internal modules are never imported directly from another context. Cross-context interaction goes through that context's declared service interface only. This is what keeps a future service extraction (noted as a Future Evolution path) a matter of moving a package, not untangling imports.
+
+---
+
+## 7. Code Quality Requirements
+
+Every change, regardless of size, must satisfy:
+
+- **Unit tests** for new/changed logic, especially anything in `decision_engine/`, `applicability/`, and `fusion/`.
+- **Integration tests** for anything crossing a repository/service boundary or a Bounded Context boundary.
+- **Property-based tests (Hypothesis)** specifically for the Decision Engine's reproducibility guarantee (INV-02) — generate varied Evidence sets and assert identical Decisions given identical pinned inputs. This is not optional "nice to have" coverage; it is the direct test of the platform's core defensibility claim.
+- **Tenant isolation tests** for any new tenant-scoped read/write path — attempt a cross-tenant read/write and assert denial, at both the application and RLS layers.
+- **Type checking** (`mypy`) with zero unexplained `# type: ignore`.
+- **Linting/formatting** (`ruff`) clean.
+- **OpenAPI accuracy** — every new/changed endpoint's request/response Pydantic models are accurate and complete; FastAPI's auto-generated docs are the API's documentation, so the models must actually be correct, not just present.
+- **Meaningful structured logging** (`structlog`) carrying `organization_id`, `analysis_run_id`, `work_unit_id` context wherever applicable — never bare print statements, never unstructured string logs for anything traceable.
+- **No TODO-driven architecture.** A `# TODO` marking a genuinely deferred, tracked, non-blocking detail is fine; a TODO standing in for an unimplemented invariant (e.g., "TODO: add tenant check") must never be merged.
+- **No dead code, no duplicate logic** — if the same aggregation or validation rule is needed in two places, it lives in one place and is called from both.
+- **Small, milestone-scoped changes** — see §8 and §9.
+
+A change is not complete until it passes all of the above. "It works when I tried it" is not a completion criterion.
+
+---
+
+## 8. Implementation Strategy
+
+- Implement **only** what the current milestone (§10) calls for. Do not implement adjacent features "while you're in there" — file them as a note in `IMPLEMENTATION_STATUS.md` for a future milestone instead.
+- **Never jump ahead** to a later milestone's scope, even if it looks easy from the current vantage point — later milestones depend on earlier ones being genuinely complete (tested, reviewed), not just "the happy path is written."
+- **Never generate unfinished code across unrelated modules.** If implementing the Decision Engine surfaces a gap in the Evidence schema, fix the Evidence schema as part of that same coherent change — do not leave a half-written stub in three other modules "for later."
+- **Prefer one complete vertical slice over many incomplete features.** A milestone should leave the system in a state where what it added actually works end-to-end (even if narrow in scope), not in a state where five features are each 60% done.
+- Every milestone ends in a state where tests pass, quality gates pass, and `IMPLEMENTATION_STATUS.md` is updated — this is what "complete" means before moving on.
+
+---
+
+## 9. Claude Code Session Workflow
+
+Every session, in order:
+
+1. **Read `CLAUDE.md`** (this file) in full before writing any code.
+2. **Read `IMPLEMENTATION_STATUS.md`** to establish exactly what is already done, what is in progress, and what the next milestone is.
+3. **Re-read the specific Phase document(s)** relevant to the current milestone's scope before implementing it — this file's summaries (§1–§2) are for orientation, not a substitute for the actual frozen spec when implementing something that spec governs in detail (e.g., the exact aggregation formulas in Phase 2 §3 before touching `decision_engine/`).
+4. **Ask clarifying questions before any architectural change.** If a task seems to require adding a field to a frozen entity, changing a lifecycle state machine, or altering an invariant in §2 — stop and ask, per §9.4. Do not proceed on an assumption.
+5. **Implement exactly one milestone** (§10), as one coherent, complete vertical slice (§8).
+6. **Write tests** per §7 as part of the same unit of work, not as a follow-up.
+7. **Run quality checks** — tests, `mypy`, `ruff`, and any configured pre-commit hooks (§11) — before considering the milestone done.
+8. **Update `IMPLEMENTATION_STATUS.md`** with what was completed, any deviations or open questions surfaced, and what the next milestone is.
+9. **Commit only when the milestone is complete** — passing tests, passing quality gates, status file updated. Commits are milestone-sized, not feature-fragment-sized or end-of-session-sized.
+
+### 9.1 Definition of "Milestone Complete"
+
+A milestone is complete when: the vertical slice it targets works end-to-end, its tests (including any tenant-isolation or reproducibility tests it implicates) pass, quality gates pass, and nothing it touched was left half-implemented in an unrelated module.
+
+### 9.2 `IMPLEMENTATION_STATUS.md` — What It Must Contain
+
+- Which milestone (§10) is currently in progress or was just completed.
+- A short log of what was implemented, by Bounded Context.
+- Any deviation from the frozen architecture that was necessary, with the reasoning, and — critically — confirmation that it was raised to and approved by the human architect (§9.4), not decided unilaterally.
+- Any open question surfaced but not yet resolved.
+- This file is Claude Code's memory bridge between sessions (§9 above item 2) — keep it accurate and current, not aspirational.
+
+### 9.3 Asking Clarifying Questions
+
+Ask before implementing, not after, whenever a task:
+- Appears to require a new field, entity, or lifecycle state not already in Phase 0–7.
+- Appears to require relaxing an invariant in §2.
+- Is ambiguous between two materially different implementations where the frozen documents don't specify which (e.g., a genuinely open item still marked "deferred to Phase 8+" in the Technology Stack document).
+
+Do not ask about things the frozen documents already answer — re-read the relevant section instead (§9, step 3).
+
+### 9.4 Handling Apparent Architecture Conflicts
+
+If implementing a requested feature seems to require violating a §2 invariant or altering a frozen entity:
+
+1. **Do not implement a version that "mostly" satisfies the invariant.**
+2. **Do not silently refuse the entire task** — identify precisely which part conflicts and why, citing the specific Phase/section/DR.
+3. **State the conflict explicitly** to the human architect, including what the frozen architecture says and what the request appears to need instead.
+4. **Wait for an explicit decision** before writing code that touches the conflicting area. Implement any non-conflicting part of the task in the meantime if it stands on its own.
+
+This mirrors exactly how Phase 2/5/6's own documents handled open questions during their own drafting (e.g., Phase 2 §11 flagging the Policy-activation-review question rather than resolving it unilaterally) — the same discipline applies to implementation.
+
+---
+
+## 10. Memory Across Sessions
+
+Because each Claude Code session starts fresh, the following must be treated as durable memory, sourced from files in the repository (not from conversational recall):
+
+- **`CLAUDE.md`** (this file) — the invariant architecture and process rules. Effectively static; changes to it require the same human-architect approval as changes to Phases 0–7 themselves, since it's derived from them.
+- **`IMPLEMENTATION_STATUS.md`** — the living record of what's built, what's next, and any approved deviations. This is the primary "what happened last session" memory.
+- **`docs/`** — the frozen architecture itself, the actual source of truth for anything this file only summarizes.
+- **Test suite** — the executable memory of what guarantees have already been verified; a passing test suite is itself evidence of what's safely built, in the same evidence-first spirit the product itself embodies.
+
+Claude Code should never rely on remembering prior conversation content across sessions for architectural facts — it should re-derive current state from these files every time, exactly as instructed in §9.
+
+---
+
+## 11. Recommended Subagents
+
+Where Claude Code's subagent capability is available, the following specializations are recommended, each with a narrow, clearly bounded responsibility mirroring the Bounded Contexts and cross-cutting concerns already defined:
+
+| Subagent | Responsibility | Boundaries |
+|---|---|---|
+| **Backend Architect** | Service-layer design within a Bounded Context; repository interfaces; cross-context contracts | Does not implement UI; does not decide security policy independently — defers to Security Reviewer on anything touching §4/§5 |
+| **AI Pipeline Engineer** | Workers, Applicability Resolution, Planning, Evidence Fusion (Phase 3) | Never implements or modifies the Decision Engine's aggregation math — that's a hard boundary, not a convenience split |
+| **Decision Engine Specialist** | Aggregation, Confidence Propagation, Verdict/Critical Rule logic, `decision_function_version` discipline (Phase 2) | Never adds an LLM call inside this module's boundary, under any justification |
+| **Security Reviewer** | Reviews every PR/change against §4/§5 and §2's invariants before merge; owns the tenant-isolation test suite | Advisory + gating authority on security-relevant changes; does not implement unrelated features |
+| **Database Architect** | Schema design consistent with Phase 0's entity model, RLS policy design, migration review | Does not alter aggregate boundaries or cardinalities without human-architect sign-off |
+| **Frontend Engineer** | Role-appropriate views (Phase 5/7 §1), explainability surfaces, Next.js/React implementation | Never invents a second permission model — always renders what RoleAssignment already grants |
+| **QA Engineer** | Test strategy across unit/integration/property/tenant-isolation categories (§7); flags coverage gaps | Does not implement production features, only tests and quality tooling |
+| **DevOps Engineer** | Terraform, ECS Fargate, CI/CD pipeline, Docker Compose local environment | Infrastructure only — never touches domain/business logic |
+| **Performance Engineer** | Profiling, query optimization, Celery queue tuning | Any proposed optimization that would touch determinism (INV-02) or isolation (INV-18/19) requires Security Reviewer + Decision Engine Specialist sign-off first |
+
+Subagents should be invoked for their specific domain rather than having one general-purpose agent attempt everything — this mirrors the "no worker exceeds its assigned scope" principle the product itself enforces (INV-23), applied to the engineering process building it.
+
+---
+
+## 12. Recommended Hooks
+
+| Hook | Trigger | Purpose |
+|---|---|---|
+| Run tests | After any file edit affecting `backend/src/` or `workers/` | Catch regressions immediately, not at commit time |
+| Run `ruff` format + lint | Pre-commit | Enforce formatting/lint consistency automatically |
+| Run `mypy` | Pre-commit | Catch type errors before they reach CI |
+| Secret scan (`gitleaks`) | Pre-commit | Block any commit containing an apparent credential |
+| Architecture-invariant check | Pre-commit (custom script) | Grep-based or AST-based check for known violation patterns — e.g., a worker module importing anything from `decision_engine/`, or an LLM client import inside `decision_engine/` — fails the commit if found |
+| Tenant-isolation test gate | Pre-push / CI | Require the `tests/tenant_isolation/` suite to pass before any push to a shared branch |
+| Property test gate (Hypothesis) | CI | Require the Decision Engine's reproducibility property tests to pass before merge |
+| Security scan (`bandit`, `semgrep`) | CI | Standard static analysis on every PR |
+| Dependency audit (`pip-audit`/Dependabot) | Scheduled + CI | Flag known-vulnerable dependencies |
+
+The **architecture-invariant check** hook is the most project-specific and highest-value one to build early: a lightweight static check that fails the commit if, for example, an LLM/API client import appears inside `decision_engine/`, or a worker module imports across a Bounded Context boundary directly rather than through its declared interface. This turns several of §2's invariants into something enforced mechanically, not just documented.
+
+---
+
+## 13. Recommended MCP Integrations
+
+Only recommended where they genuinely reduce friction for this specific project's workflow:
+
+- **GitHub MCP** — PR creation/review, issue tracking tied to milestones (§10), keeping `IMPLEMENTATION_STATUS.md` cross-referenced with actual PR history.
+- **Postgres MCP** (read-only, scoped to a local/dev database) — useful for a Database Architect subagent to inspect actual schema state and RLS policy behavior directly, rather than trusting migration files alone; must never be pointed at a production database with real tenant data given INV-21's spirit (no shortcut that grants content-adjacent access outside the normal application path).
+- **Sentry/observability MCP** (once Phase 4/7's observability layer is implemented) — for a Performance Engineer or QA Engineer subagent to correlate a failing test or bug report with actual Work Unit/AnalysisRun execution telemetry.
+
+Deliberately **not** recommended: any MCP that would grant a Claude Code session standing, cached access to a *production* tenant database or secrets store — that would itself be a security shortcut of exactly the kind §4.6 prohibits.
+
+---
+
+## 14. Implementation Roadmap — Milestones
+
+Ordered to minimize rework, following the frozen architecture's own dependency order (PRD §21: each phase provides load-bearing structure for the next). **Round 1 (Milestones 1–5) explicitly targets the 50–60% technical evaluation bar** — a working, evidence-first, explainable, tenant-isolated core loop, even with a deliberately narrow feature surface.
+
+### Round 1 — Core Evaluation Target (50–60%)
+
+**Milestone 1 — Domain Foundation**
+Implement the core entity model (Phase 0 §3) for Organization, Workspace, Brand, BrandGenome, Policy, BrandHistory — with the pointer-based activation mechanism (`active_genome_version_id`/`active_policy_version_id`), `org_id` denormalization, and RLS policies from day one. No API yet beyond what's needed to exercise this in tests. **Done when:** activation invariant (exactly-one-active, INV-09) is enforced by construction and covered by tests, and cross-tenant reads are denied by RLS in a dedicated test.
+
+**Milestone 2 — Genome Compilation & Human Review Gate**
+Implement Brand asset ingestion (FR-001), Genome compilation into the Category/Component/Assertion hierarchy (Phase 1 §1–§5), and the mandatory human-review activation gate (DR-006, INV-15). **Done when:** a draft Genome can be built from uploaded assets, cannot reach `pending_review` without satisfying Required-category coverage (Phase 1 §3/§10), and cannot become active without an explicit `activated_by`.
+
+**Milestone 3 — Minimal AI Pipeline (Text Only)**
+Implement Applicability Determination, Planning, and one worker (Verbal Worker) end-to-end for text content only (Phase 3), producing real Evidence against real Genome Assertions. **Done when:** a text AssetVersion produces Evidence with correct outcome-taxonomy handling (evidence/attempted-no-signal/worker-failure/Not Applicable, INV-24) and Completeness Verification correctly gates `complete`/`failed`.
+
+**Milestone 4 — Decision Engine**
+Implement the full deterministic aggregation (Phase 2 §3), Confidence Propagation (§4), Policy Evaluation with Category/Component/Assertion weights and Verdict Thresholds (§2, §5), and Critical Rules with the Applicability interaction clause (§2.3 + addendum). **Done when:** the reproducibility guarantee (INV-02) is verified by Hypothesis property tests, and a Critical Rule correctly resolves to fired/not-fired/not-evaluated per INV-26.
+
+**Milestone 5 — Explainability & Minimal Report**
+Implement the Explainability Engine's on-demand reconstruction (Phase 2 §7) and Report as a persisted read model (Phase 0 §3.16) with the review/flag overlay. Minimal frontend surface showing a score with its confidence and a one-click path to Evidence (§1.7, INV-05). **Done when:** a full text AssetVersion → Report round trip works, is fully explainable down to source BrandHistoryItem, and correctly pins Genome/Policy versions (INV-10).
+
+### Round 2 — Multimodal & Recommendation Completeness
+
+**Milestone 6 — Image & Video Workers**
+Add Visual Worker (image) and video's derived-content pipeline (frame/transcript extraction ordering dependency, Phase 3 §3/§7). **Done when:** image and video AssetVersions produce correctly-scoped Evidence, and video's ordering dependency is enforced.
+
+**Milestone 7 — Remaining Workers & Recommendation Generation**
+Add Compliance & Accessibility Worker, Distinctiveness Worker (with AI Slop KB consultation, INV-20), Values & Mission Worker; implement deterministic Recommendation triggering/priority plus schema-constrained narration (Phase 2 §6, INV-04/INV-06). **Done when:** all six worker-covered categories function, and Recommendation text is demonstrably decoupled from triggering/priority reproducibility.
+
+### Round 3 — Platform Engineering & Execution Robustness
+
+**Milestone 8 — Work Unit Orchestration**
+Implement the Phase 4 execution layer: Work Unit lifecycle, Execution Plan, Orchestrator, retry/idempotency, failure isolation. **Done when:** a Required-category worker failure correctly routes to `failed` (INV-25), an Optional-category failure doesn't block completion, and Work Unit isolation is verified (INV-29).
+
+**Milestone 9 — Observability**
+Implement Phase 4 §11's real-time Work Unit/AnalysisRun visibility, using OpenTelemetry/Prometheus/Grafana per the Technology Stack. **Done when:** an in-progress run's Work Unit states are inspectable live, scoped correctly by RoleAssignment (Phase 6 §2).
+
+### Round 4 — Enterprise SaaS Layer
+
+**Milestone 10 — RBAC, Membership, and Multi-Brand Scoping**
+Implement Phase 5's Membership lifecycle, the RoleAssignment scope-tier addendum (organization/workspace/brand), OrganizationAdministrator, and the self-escalation prevention rule (INV-22). **Done when:** scope-tier enforcement, least-privilege defaults, and self-escalation denial are all covered by dedicated authorization tests.
+
+**Milestone 11 — Governance Workflows**
+Implement the optional maker-checker overlay for Genome/Policy activation (Phase 5 §4), campaign versioning/trend tracking (FR-010), and the full human review/publication workflow (PRD §11.4). **Done when:** a full campaign-iteration loop (upload → score → recommend → revise → re-score → trend) works end-to-end for a real tenant.
+
+### Round 5 — Security & Governance Hardening
+
+**Milestone 12 — Audit Hardening & Trust Boundary Enforcement**
+Implement Phase 6's full audit coverage (including denied-escalation events), DB-level audit immutability (INV-33), InternalOperator's structural content exclusion (INV-21), and Organization-suspension-vs-in-flight-run behavior (INV-30). **Done when:** every governance action produces a correctly-scoped audit entry, and InternalOperator access is provably incapable of reaching tenant content, not merely policy-restricted from it.
+
+### Round 6 — Product Experience & Operations
+
+**Milestone 13 — Full Role-Appropriate Product Surface**
+Complete the frontend across all personas (Brand Administrator, Marketing Manager, Content Creator, Executive, OrganizationAdministrator) per Phase 7 §1, with the four-state Coverage/Confidence distinction (INV-07) surfaced faithfully everywhere it appears.
+
+**Milestone 14 — API/Integration Symmetry**
+Implement the full conceptual capability surface (Phase 7 §2) programmatically, with identical authorization enforcement to the product surface (no looser API path), plus the notification/webhook capability for terminal AnalysisRun states.
+
+**Milestone 15 — Support/Ops Boundaries & Continuous-Learning Program**
+Implement the support visibility boundary (Phase 7 §5) and formalize the Mediated Path as a recurring, human-run program (Phase 7 §4) — never automatic.
+
+---
+
+**Sequencing discipline:** do not begin a later-round milestone while an earlier one has open test failures or undocumented deviations in `IMPLEMENTATION_STATUS.md`. Each milestone is load-bearing for the next, exactly as the architecture phases themselves were designed to be built.
+
+---
+
+*End of CLAUDE.md. This document is derived entirely from the frozen PRD and Phases 0–7 plus the Technology Stack Selection Document. It contains no architectural decisions of its own — only the operating discipline required to implement what is already decided, faithfully.*
