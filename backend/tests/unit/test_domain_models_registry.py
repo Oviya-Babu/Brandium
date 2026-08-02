@@ -7,9 +7,13 @@ EXPECTED_TABLES = {
     "organizations",
     "workspaces",
     "users",
+    "memberships",
     "internal_operators",
     "brands",
     "brand_genomes",
+    "genome_categories",
+    "genome_components",
+    "assertions",
     "policies",
     "brand_history_items",
     "role_assignments",
@@ -18,6 +22,7 @@ EXPECTED_TABLES = {
     "asset_versions",
     "analysis_runs",
     "observations",
+    "assertion_outcomes",
     "evidence",
     "decisions",
     "recommendations",
@@ -46,3 +51,19 @@ def test_genome_and_policy_status_never_include_active() -> None:
 
     assert "active" not in {s.value for s in GenomeStatus}
     assert "active" not in {s.value for s in PolicyStatus}
+
+
+def test_required_genome_categories_match_phase_1_section_3() -> None:
+    from src.brand_governance.domain.models import REQUIRED_GENOME_CATEGORIES, GenomeCategoryName
+
+    assert REQUIRED_GENOME_CATEGORIES == {
+        GenomeCategoryName.VISUAL_IDENTITY,
+        GenomeCategoryName.VERBAL_IDENTITY,
+        GenomeCategoryName.MESSAGING_POSITIONING,
+    }
+
+
+def test_role_assignment_scope_tier_values_match_phase_5() -> None:
+    from src.identity_access.domain.models import ScopeTier
+
+    assert {t.value for t in ScopeTier} == {"organization", "workspace", "brand"}

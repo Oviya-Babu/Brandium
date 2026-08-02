@@ -1,21 +1,27 @@
-"""Initial domain foundation — Phase 0 entity model, RLS, audit immutability
+"""Initial domain foundation — Phase 0-6 entity model, RLS, audit immutability
 
 Revision ID: 0001
 Revises:
 Create Date: 2026-07-31
 
-Creates every entity from Phase 0 Business Domain Specification v0.2 §3,
-across all six Bounded Contexts (CLAUDE.md §1.5), with:
-  - `org_id` denormalized on every tenant-scoped table (Phase 0 §6, DR-003)
-  - Postgres Row-Level Security enabled on every tenant-scoped table,
-    scoped to `current_setting('app.current_org_id')` (CLAUDE.md §4.3).
-    NOTE: the per-request `SET app.current_org_id` wiring is an
-    application-layer concern deferred to the next milestone (Milestone 1
-    in CLAUDE.md's roadmap) — this migration establishes the DB-enforced
-    mechanism, not the request middleware that populates it.
-  - `Brand.active_genome_version_id` / `active_policy_version_id` as
-    deferred (use_alter) foreign keys, resolving the circular reference
-    between Brand <-> BrandGenome/Policy (Phase 0 §3.5, INV-09).
+Creates every entity from Phase 0-6, across all six Bounded Contexts
+(CLAUDE.md §1.5), including the additive elaborations later phases
+require (all flagged, none silently invented — see IMPLEMENTATION_STATUS.md):
+
+  - Phase 1 §1: BrandGenome's internal Category/Component/Assertion
+    structure, as tables scoped to `genome_id` (not new aggregate roots).
+  - Phase 1 §0/§4: BrandHistory.source_type extension + modality/era_tag/
+    authority_level fields.
+  - Phase 3 addenda: `applicability_scope` on Genome elements,
+    `context_tags` on AssetVersion, the AssertionOutcome four-state
+    taxonomy table.
+  - Phase 5 §0/§2: Membership entity, RoleAssignment `scope_tier`/
+    `scope_id`, OrganizationAdministrator role, Organization's widened
+    `provisioned|active|suspended|offboarded` lifecycle.
+  - `org_id` denormalized on every tenant-scoped table (Phase 0 §6,
+    DR-003), with Postgres RLS scoped to `current_setting('app.current_org_id')`
+    (CLAUDE.md §4.3). The per-request `SET LOCAL` middleware is
+    application-layer (see `src/shared_kernel/tenant_context.py`).
   - No UPDATE/DELETE grants on `audit_log_entries` for the application
     role (INV-33, Technology Stack §20).
 """
@@ -31,31 +37,30 @@ down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-# Tables that carry a tenant-scoping `org_id` and must have RLS enabled
-# (Phase 0 §6 — everything except InternalOperator, AuditLogEntry, AISlopKnowledgeBase).
 TENANT_SCOPED_TABLES = [
     "workspaces",
     "users",
+    "memberships",
+    "role_assignments",
     "brands",
     "brand_genomes",
+    "genome_categories",
+    "genome_components",
+    "assertions",
     "policies",
     "brand_history_items",
-    "role_assignments",
     "campaigns",
     "assets",
     "asset_versions",
     "analysis_runs",
     "observations",
+    "assertion_outcomes",
     "evidence",
     "reports",
     "decisions",
     "recommendations",
 ]
 
-# The role the application connects as (matches docker-compose's default
-# `POSTGRES_USER`/`DATABASE_URL` credential, src/config.py). If the
-# connecting role ever changes, this migration's REVOKE/RLS `TO` targets
-# must be updated to match — flagged explicitly rather than assumed silently.
 APP_ROLE = "brandium"
 
 
@@ -68,7 +73,7 @@ def upgrade() -> None:
         sa.Column("name", sa.String(), nullable=False),
         sa.Column(
             "status",
-            sa.Enum("active", "suspended", name="organization_status"),
+            sa.Enum("provisioned", "active", "suspended", "offboarded", name="organization_status"),
             nullable=False,
         ),
     )
@@ -96,10 +101,17 @@ def upgrade() -> None:
         comment="INV-21: deliberately no org_id, no relationship into any tenant-scoped table.",
     )
 
+    op.create_table(
+        "memberships",
+        sa.Column("id", sa.Uuid(), primary_key=True),
+        sa.Column("org_id", sa.Uuid(), sa.ForeignKey("organizations.id"), nullable=False, index=True),
+        sa.Column("user_id", sa.Uuid(), sa.ForeignKey("users.id"), nullable=False, index=True, unique=True),
+        sa.Column(
+            "status", sa.Enum("invited", "active", "suspended", "removed", name="membership_status"), nullable=False
+        ),
+    )
+
     # --- Bounded Context 2: Brand Governance -------------------------------
-    # `brands` created first without FKs on active_genome_version_id /
-    # active_policy_version_id (deferred below via ALTER) to break the
-    # Brand <-> BrandGenome/Policy circular reference (Phase 0 §3.5).
     op.create_table(
         "brands",
         sa.Column("id", sa.Uuid(), primary_key=True),
@@ -123,13 +135,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("compiled_from", sa.JSON(), nullable=True),
-        sa.Column(
-            "activated_by",
-            sa.Uuid(),
-            sa.ForeignKey("users.id"),
-            nullable=True,
-            comment="Required non-null at activation time — DR-006/INV-15; app-layer enforced.",
-        ),
+        sa.Column("activated_by", sa.Uuid(), sa.ForeignKey("users.id"), nullable=True),
         sa.Column("activated_at", sa.DateTime(timezone=True), nullable=True),
     )
 
@@ -143,20 +149,83 @@ def upgrade() -> None:
         sa.Column("rules", sa.JSON(), nullable=True),
     )
 
-    # Deferred FKs completing Brand's version pointers (INV-09).
     op.create_foreign_key(
-        "fk_brand_active_genome_version",
-        "brands",
-        "brand_genomes",
-        ["active_genome_version_id"],
-        ["id"],
+        "fk_brand_active_genome_version", "brands", "brand_genomes", ["active_genome_version_id"], ["id"]
     )
     op.create_foreign_key(
-        "fk_brand_active_policy_version",
-        "brands",
-        "policies",
-        ["active_policy_version_id"],
-        ["id"],
+        "fk_brand_active_policy_version", "brands", "policies", ["active_policy_version_id"], ["id"]
+    )
+
+    op.create_table(
+        "genome_categories",
+        sa.Column("id", sa.Uuid(), primary_key=True),
+        sa.Column("org_id", sa.Uuid(), sa.ForeignKey("organizations.id"), nullable=False, index=True),
+        sa.Column("genome_id", sa.Uuid(), sa.ForeignKey("brand_genomes.id"), nullable=False, index=True),
+        sa.Column(
+            "name",
+            sa.Enum(
+                "visual_identity",
+                "verbal_identity",
+                "messaging_positioning",
+                "values_mission",
+                "compliance_legal",
+                "accessibility",
+                name="genome_category_name",
+            ),
+            nullable=False,
+        ),
+        sa.Column("applicability_scope", sa.JSON(), nullable=True),
+    )
+
+    op.create_table(
+        "genome_components",
+        sa.Column("id", sa.Uuid(), primary_key=True),
+        sa.Column("org_id", sa.Uuid(), sa.ForeignKey("organizations.id"), nullable=False, index=True),
+        sa.Column("category_id", sa.Uuid(), sa.ForeignKey("genome_categories.id"), nullable=False, index=True),
+        sa.Column("name", sa.String(), nullable=False),
+        sa.Column("applicability_scope", sa.JSON(), nullable=True),
+    )
+
+    op.create_table(
+        "assertions",
+        sa.Column("id", sa.Uuid(), primary_key=True),
+        sa.Column("org_id", sa.Uuid(), sa.ForeignKey("organizations.id"), nullable=False, index=True),
+        sa.Column("component_id", sa.Uuid(), sa.ForeignKey("genome_components.id"), nullable=False, index=True),
+        sa.Column("content", sa.Text(), nullable=False),
+        sa.Column("confidence", sa.Float(), nullable=False),
+        sa.Column("status", sa.Enum("active", "conflicted", name="assertion_status"), nullable=False),
+        sa.Column(
+            "origin_type",
+            sa.Enum("explicit_source", "exemplar_source", "human_override", name="assertion_origin_type"),
+            nullable=False,
+        ),
+        sa.Column("source_reference_ids", sa.JSON(), nullable=False),
+        sa.Column("applicability_scope", sa.JSON(), nullable=True),
+        sa.Column("recorded_at", sa.DateTime(timezone=True), nullable=False),
+    )
+
+    op.create_table(
+        "role_assignments",
+        sa.Column("id", sa.Uuid(), primary_key=True),
+        sa.Column("org_id", sa.Uuid(), sa.ForeignKey("organizations.id"), nullable=False, index=True),
+        sa.Column("user_id", sa.Uuid(), sa.ForeignKey("users.id"), nullable=False, index=True),
+        sa.Column(
+            "role",
+            sa.Enum(
+                "OrganizationAdministrator",
+                "BrandAdministrator",
+                "MarketingManager",
+                "ContentCreator",
+                "ExecutiveViewer",
+                name="role",
+            ),
+            nullable=False,
+        ),
+        sa.Column("scope_tier", sa.Enum("organization", "workspace", "brand", name="scope_tier"), nullable=False),
+        sa.Column("scope_id", sa.Uuid(), nullable=False, index=True),
+        sa.Column("granted_by", sa.Uuid(), sa.ForeignKey("users.id"), nullable=False),
+        sa.Column("granted_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
     )
 
     op.create_table(
@@ -166,30 +235,25 @@ def upgrade() -> None:
         sa.Column("brand_id", sa.Uuid(), sa.ForeignKey("brands.id"), nullable=False, index=True),
         sa.Column(
             "source_type",
-            sa.Enum("campaign", "ad", "social", "video", name="brand_history_source_type"),
-            nullable=False,
-        ),
-        sa.Column("storage_ref", sa.String(), nullable=False),
-        sa.Column("ingested_at", sa.DateTime(timezone=True), nullable=False),
-    )
-
-    op.create_table(
-        "role_assignments",
-        sa.Column("id", sa.Uuid(), primary_key=True),
-        sa.Column("org_id", sa.Uuid(), sa.ForeignKey("organizations.id"), nullable=False, index=True),
-        sa.Column("user_id", sa.Uuid(), sa.ForeignKey("users.id"), nullable=False, index=True),
-        sa.Column("workspace_id", sa.Uuid(), sa.ForeignKey("workspaces.id"), nullable=False, index=True),
-        sa.Column(
-            "role",
             sa.Enum(
-                "BrandAdministrator",
-                "MarketingManager",
-                "ContentCreator",
-                "ExecutiveViewer",
-                name="role",
+                "guideline_document",
+                "design_system_spec",
+                "campaign",
+                "ad",
+                "social",
+                "video",
+                name="brand_history_source_type",
             ),
             nullable=False,
         ),
+        sa.Column("modality", sa.Enum("text", "image", "video", name="brand_history_modality"), nullable=False),
+        sa.Column("era_tag", sa.String(), nullable=True),
+        sa.Column(
+            "authority_level", sa.Enum("explicit", "exemplar", name="brand_history_authority_level"), nullable=False
+        ),
+        sa.Column("storage_ref", sa.String(), nullable=False),
+        sa.Column("extracted_text", sa.Text(), nullable=True),
+        sa.Column("ingested_at", sa.DateTime(timezone=True), nullable=False),
     )
 
     # --- Bounded Context 3: Campaign & Asset Management --------------------
@@ -221,6 +285,7 @@ def upgrade() -> None:
         sa.Column("uploaded_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("storage_ref", sa.String(), nullable=False),
         sa.Column("content_hash", sa.String(), nullable=False),
+        sa.Column("context_tags", sa.JSON(), nullable=False),
         comment="Append-only (INV-13) — enforced at the application/service layer, not by DDL alone.",
     )
 
@@ -237,9 +302,9 @@ def upgrade() -> None:
             sa.Enum("queued", "running", "complete", "failed", name="analysis_run_status"),
             nullable=False,
         ),
+        sa.Column("failure_reason", sa.String(), nullable=True),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
-        comment="genome_version_id/policy_version_id set once at creation, never updated (DR-005).",
     )
 
     op.create_table(
@@ -247,9 +312,26 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("org_id", sa.Uuid(), sa.ForeignKey("organizations.id"), nullable=False, index=True),
         sa.Column("analysis_run_id", sa.Uuid(), sa.ForeignKey("analysis_runs.id"), nullable=False, index=True),
+        sa.Column("assertion_id", sa.Uuid(), sa.ForeignKey("assertions.id"), nullable=False, index=True),
         sa.Column("worker_type", sa.String(), nullable=False),
         sa.Column("raw_output", sa.JSON(), nullable=False),
         sa.Column("confidence", sa.Float(), nullable=False),
+    )
+
+    op.create_table(
+        "assertion_outcomes",
+        sa.Column("id", sa.Uuid(), primary_key=True),
+        sa.Column("org_id", sa.Uuid(), sa.ForeignKey("organizations.id"), nullable=False, index=True),
+        sa.Column("analysis_run_id", sa.Uuid(), sa.ForeignKey("analysis_runs.id"), nullable=False, index=True),
+        sa.Column("assertion_id", sa.Uuid(), sa.ForeignKey("assertions.id"), nullable=False, index=True),
+        sa.Column(
+            "outcome_type",
+            sa.Enum(
+                "evidence", "attempted_no_signal", "worker_failure", "not_applicable", name="assertion_outcome_type"
+            ),
+            nullable=False,
+        ),
+        sa.Column("recorded_at", sa.DateTime(timezone=True), nullable=False),
     )
 
     op.create_table(
@@ -257,8 +339,13 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("org_id", sa.Uuid(), sa.ForeignKey("organizations.id"), nullable=False, index=True),
         sa.Column("analysis_run_id", sa.Uuid(), sa.ForeignKey("analysis_runs.id"), nullable=False, index=True),
-        sa.Column("evidence_type", sa.String(), nullable=False),
-        sa.Column("description", sa.Text(), nullable=False),
+        sa.Column("assertion_id", sa.Uuid(), sa.ForeignKey("assertions.id"), nullable=False, index=True),
+        sa.Column("observed_characteristic", sa.JSON(), nullable=False),
+        sa.Column(
+            "alignment_indicator",
+            sa.Enum("aligned", "partially_aligned", "misaligned", name="alignment_indicator"),
+            nullable=False,
+        ),
         sa.Column("confidence", sa.Float(), nullable=False),
         sa.Column("source_observation_ids", sa.JSON(), nullable=False),
     )
@@ -277,6 +364,7 @@ def upgrade() -> None:
         ),
         sa.Column("score", sa.Float(), nullable=False),
         sa.Column("verdict", sa.String(), nullable=False),
+        sa.Column("verdict_source", sa.String(), nullable=False),
         sa.Column("decision_function_version", sa.Integer(), nullable=False),
         sa.Column("computed_at", sa.DateTime(timezone=True), nullable=False),
     )
@@ -286,11 +374,11 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("org_id", sa.Uuid(), sa.ForeignKey("organizations.id"), nullable=False, index=True),
         sa.Column("analysis_run_id", sa.Uuid(), sa.ForeignKey("analysis_runs.id"), nullable=False, index=True),
+        sa.Column("component_id", sa.Uuid(), sa.ForeignKey("genome_components.id"), nullable=False),
         sa.Column("related_evidence_ids", sa.JSON(), nullable=False),
         sa.Column("text", sa.Text(), nullable=False),
-        sa.Column("priority", sa.String(), nullable=False),
+        sa.Column("priority", sa.Float(), nullable=False),
         sa.Column("generated_at", sa.DateTime(timezone=True), nullable=False),
-        comment="INV-06: application layer must reject empty related_evidence_ids.",
     )
 
     # --- Bounded Context 5: Reporting --------------------------------------
@@ -324,6 +412,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("org_id", sa.Uuid(), nullable=True, index=True),
         sa.Column("actor_id", sa.Uuid(), nullable=False),
+        sa.Column("actor_type", sa.Enum("user", "internal_operator", name="audit_actor_type"), nullable=False),
         sa.Column("action_type", sa.String(), nullable=False),
         sa.Column("target_entity", sa.String(), nullable=False),
         sa.Column("target_id", sa.Uuid(), nullable=False),
@@ -336,14 +425,9 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("source_type", sa.Enum("public", "synthetic", name="ai_slop_source_type"), nullable=False),
         sa.Column("content_ref", sa.String(), nullable=False),
-        comment="DR-004: global, structurally outside the Organization tree.",
     )
 
     # --- Row-Level Security (Phase 0 §6, CLAUDE.md §4.3, INV-18) ----------
-    # Structural mechanism only in this migration: enables RLS and defines
-    # the policy shape. The per-request `SET LOCAL app.current_org_id`
-    # middleware that populates this session variable is an application-
-    # layer concern for the next milestone, not this one.
     for table in TENANT_SCOPED_TABLES:
         op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
         op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
@@ -356,9 +440,6 @@ def upgrade() -> None:
         )
 
     # --- Audit log immutability (INV-33, Technology Stack §20) -------------
-    # The application role receives INSERT/SELECT only; UPDATE/DELETE are
-    # revoked at the database level so even a buggy application cannot
-    # violate "audit history is never rewritten, truncated, or deleted."
     op.execute(f"REVOKE UPDATE, DELETE ON audit_log_entries FROM {APP_ROLE}")
     op.execute(f"GRANT SELECT, INSERT ON audit_log_entries TO {APP_ROLE}")
 
@@ -370,40 +451,55 @@ def downgrade() -> None:
         op.execute(f"DROP POLICY IF EXISTS tenant_isolation_{table} ON {table}")
         op.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY")
 
-    op.drop_table("ai_slop_knowledge_base")
-    op.drop_table("audit_log_entries")
-    op.drop_table("reports")
-    op.drop_table("recommendations")
-    op.drop_table("decisions")
-    op.drop_table("evidence")
-    op.drop_table("observations")
-    op.drop_table("analysis_runs")
-    op.drop_table("asset_versions")
-    op.drop_table("assets")
-    op.drop_table("campaigns")
-    op.drop_table("role_assignments")
-    op.drop_table("brand_history_items")
+    for table in [
+        "ai_slop_knowledge_base",
+        "audit_log_entries",
+        "reports",
+        "recommendations",
+        "decisions",
+        "evidence",
+        "assertion_outcomes",
+        "observations",
+        "analysis_runs",
+        "asset_versions",
+        "assets",
+        "campaigns",
+        "brand_history_items",
+        "role_assignments",
+        "assertions",
+        "genome_components",
+        "genome_categories",
+    ]:
+        op.drop_table(table)
+
     op.drop_constraint("fk_brand_active_policy_version", "brands", type_="foreignkey")
     op.drop_constraint("fk_brand_active_genome_version", "brands", type_="foreignkey")
-    op.drop_table("policies")
-    op.drop_table("brand_genomes")
-    op.drop_table("brands")
-    op.drop_table("internal_operators")
-    op.drop_table("users")
-    op.drop_table("workspaces")
-    op.drop_table("organizations")
+
+    for table in ["policies", "brand_genomes", "brands", "memberships", "internal_operators", "users", "workspaces",
+                  "organizations"]:
+        op.drop_table(table)
 
     for enum_name in [
         "ai_slop_source_type",
+        "audit_actor_type",
         "report_review_status",
+        "assertion_outcome_type",
+        "alignment_indicator",
         "analysis_run_status",
         "asset_modality",
         "campaign_status",
-        "role",
+        "brand_history_authority_level",
+        "brand_history_modality",
         "brand_history_source_type",
+        "scope_tier",
+        "role",
+        "assertion_origin_type",
+        "assertion_status",
+        "genome_category_name",
         "policy_status",
         "genome_status",
         "brand_status",
+        "membership_status",
         "organization_status",
     ]:
         sa.Enum(name=enum_name).drop(op.get_bind(), checkfirst=True)

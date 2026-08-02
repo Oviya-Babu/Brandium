@@ -40,12 +40,28 @@ class Settings(BaseSettings):
 
     # Ollama — primary self-hosted LLM + embedding runtime (Technology Stack v1.1 §14/§15)
     ollama_base_url: str = "http://localhost:11434"
-    ollama_llm_model: str = "qwen3:8b-instruct"
+    # `qwen3:4b`, not `qwen3:8b-instruct` — the latter is not a real
+    # Ollama tag (Qwen3's dense models are instruct-capable by default
+    # and published under just their size, e.g. `qwen3:4b`/`qwen3:8b`).
+    # 4B chosen as the default for latency/resource footprint; bump to
+    # `qwen3:8b` via .env if a host has the headroom and wants the
+    # larger model's extra capability.
+    ollama_llm_model: str = "qwen3:4b"
     ollama_embedding_model: str = "bge-m3"
 
-    # Groq — optional secondary provider, narrative generation only (Technology Stack v1.1 §15)
+    # Groq — automatic fallback when Ollama is unavailable or fails
+    # (shared_kernel/llm/client.py), not narration-only by convention
+    # anymore. Unset (None) disables the fallback entirely — Ollama
+    # failures then raise instead of silently trying a nonexistent
+    # secondary provider.
     groq_api_key: str | None = None
     groq_narration_model: str | None = None
+
+    # CORS — the Next.js frontend (localhost:3000) and the FastAPI backend
+    # (localhost:8000) are different origins even in local dev (PRD §24's
+    # API-first symmetry means the browser calls this API directly, not
+    # through a same-origin proxy), so the API must explicitly allow it.
+    cors_allowed_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
     @property
     def is_production(self) -> bool:

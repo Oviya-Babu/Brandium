@@ -29,6 +29,11 @@ class BaseRepository(Generic[ModelT]):
         await self._session.flush()
         return entity
 
+    async def add_all(self, entities: list[ModelT]) -> list[ModelT]:
+        self._session.add_all(entities)
+        await self._session.flush()
+        return entities
+
     async def get_by_id(self, entity_id: uuid.UUID) -> ModelT | None:
         return await self._session.get(self.model, entity_id)
 

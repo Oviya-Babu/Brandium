@@ -25,6 +25,14 @@ class AISlopSourceType(str, enum.Enum):
     SYNTHETIC = "synthetic"
 
 
+class AuditActorType(str, enum.Enum):
+    """Phase 5 §8: InternalOperator actions are audited identically to
+    tenant-side actions but distinctly tagged by actor type."""
+
+    USER = "user"
+    INTERNAL_OPERATOR = "internal_operator"
+
+
 class AuditLogEntry(UUIDPrimaryKeyMixin, Base):
     """Phase 0 §3.17 — global, append-only. `org_id` is present for
     visibility scoping only, never as a tenant-isolation exemption
@@ -38,6 +46,7 @@ class AuditLogEntry(UUIDPrimaryKeyMixin, Base):
     actor_id: Mapped[uuid.UUID] = mapped_column(
         nullable=False, comment="References either a User or an InternalOperator; no single FK by design."
     )
+    actor_type: Mapped[AuditActorType] = mapped_column(Enum(AuditActorType, name="audit_actor_type", values_callable=lambda obj: [e.value for e in obj]), nullable=False)
     action_type: Mapped[str] = mapped_column(String, nullable=False)
     target_entity: Mapped[str] = mapped_column(String, nullable=False)
     target_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
@@ -55,6 +64,6 @@ class AISlopKnowledgeBase(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "ai_slop_knowledge_base"
 
     source_type: Mapped[AISlopSourceType] = mapped_column(
-        Enum(AISlopSourceType, name="ai_slop_source_type"), nullable=False
+        Enum(AISlopSourceType, name="ai_slop_source_type", values_callable=lambda obj: [e.value for e in obj]), nullable=False
     )
     content_ref: Mapped[str] = mapped_column(String, nullable=False)

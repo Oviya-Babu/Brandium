@@ -9,9 +9,21 @@ x-backend-env: &backend-env
   S3_SECRET_KEY: brandium-dev-secret
   S3_BUCKET_NAME: brandium-assets
   OLLAMA_BASE_URL: http://ollama:11434
-  OLLAMA_LLM_MODEL: qwen3:8b-instruct
+  # `qwen3:8b-instruct` is not a real Ollama tag (verified against the
+  # library — Qwen3's dense models are instruct-capable by default and
+  # published under just their size, e.g. `qwen3:8b`/`qwen3:4b`; the
+  # `-instruct` suffix only exists for the separate 4B/30B/235B "2507"
+  # refreshes). Default is now `qwen3:4b` — same family, smaller/faster,
+  # chosen deliberately for this host's resource envelope; override via
+  # `.env`'s OLLAMA_LLM_MODEL, never hardcode a different value here.
+  OLLAMA_LLM_MODEL: ${OLLAMA_LLM_MODEL:-qwen3:4b}
   OLLAMA_EMBEDDING_MODEL: bge-m3
   ENVIRONMENT: local
+  # Groq — optional automatic fallback when Ollama is unavailable or
+  # fails (shared_kernel/llm/client.py). Sourced from `.env` only, never
+  # a literal value here — `.env` is git-ignored (see .env.example).
+  GROQ_API_KEY: ${GROQ_API_KEY:-}
+  GROQ_NARRATION_MODEL: ${GROQ_NARRATION_MODEL:-}
 
 services:
   postgres:
@@ -59,6 +71,19 @@ services:
       timeout: 5s
       retries: 10
 
+  # One-shot: MinIO starts with no buckets. `ObjectStorageClient` (Technology
+  # Stack §7) assumes `brandium-assets` already exists and never creates it
+  # itself — without this, the first Brand History upload or Asset upload
+  # fails with NoSuchBucket. Exits immediately once the bucket exists;
+  # `backend`/`worker` wait on it via `service_completed_successfully`.
+  minio-init:
+    image: minio/mc:latest
+    entrypoint: ["sh", "-c", "mc alias set local http://minio:9000 brandium brandium-dev-secret && mc mb --ignore-existing local/brandium-assets"]
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+
   # Vector database, collection-per-tenant isolation (Technology Stack v1.1 §6, INV-19).
   qdrant:
     image: qdrant/qdrant:latest
@@ -67,6 +92,14 @@ services:
       - "6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
+    healthcheck:
+      # No curl/wget/python3 in this image (Rust binary, minimal
+      # userland) — bash's /dev/tcp is the one thing available for a
+      # dependency-free TCP reachability check.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/6333"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   # Primary self-hosted LLM + embedding runtime (Technology Stack v1.1 §14/§15).
   # Serves Qwen 3 8B Instruct and BAAI bge-m3. CPU inference works for local
@@ -78,6 +111,28 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 20s
+
+  # One-shot: the ollama/ollama image ships with no models pulled. Every
+  # LLM/embedding call in the system (`shared_kernel/llm/client.py`) will
+  # fail against a fresh volume without this. First run downloads several
+  # GB and can take a long time depending on bandwidth — subsequent runs
+  # are a no-op because `ollama pull` is idempotent and `ollama_data` is a
+  # named volume (models persist across `docker compose down`, not `-v`).
+  ollama-init:
+    image: ollama/ollama:latest
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["sh", "-c", "ollama pull ${OLLAMA_LLM_MODEL:-qwen3:4b} && ollama pull ${OLLAMA_EMBEDDING_MODEL:-bge-m3}"]
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
 
   backend:
     build: ./backend
@@ -87,30 +142,80 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
+      # The API process only ever *dispatches* Celery tasks (`.delay(...)`
+      # in api/routers/analysis.py) — it needs `workers.tasks`/`workers.celery_app`
+      # importable to build the message, even though task bodies only ever
+      # execute inside the `worker` service.
+      - ./workers:/app/workers
+    healthcheck:
+      # No curl/wget in the python:slim image — urllib is stdlib. Without
+      # this, `docker compose ps` shows no health status for backend at
+      # all (unlike postgres/redis/minio/ollama, which all report
+      # "(healthy)"), which reads as suspicious even when the process is
+      # fine — this makes the real state visible instead of absent.
+      test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      minio:
-        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
       qdrant:
         condition: service_started
+      # Depends on `ollama` being reachable, not on `ollama-init` having
+      # finished — the API/worker processes don't call Ollama until a
+      # request actually triggers Genome compilation or an AnalysisRun,
+      # so there's no reason to block container startup on a multi-GB,
+      # bandwidth-bound model download that can take much longer than
+      # everything else in this file combined. `ollama-init` still runs
+      # in the background and should be finished before you actually use
+      # a Genome/Analysis feature — check `docker compose logs ollama-init`
+      # or `docker exec <ollama container> ollama list` if an LLM call
+      # fails early after a fresh `docker compose up`.
       ollama:
-        condition: service_started
+        condition: service_healthy
 
   worker:
     build: ./backend
-    command: ["celery", "-A", "workers.celery_app", "worker", "--loglevel=info"]
+    # `workers/` lives at the repo root (sibling of backend/), mounted
+    # under the same /app WORKDIR the backend image uses so `-A
+    # workers.celery_app` resolves as a top-level package (fixed from an
+    # earlier mount at container-root /workers, which the /app WORKDIR
+    # could never have imported from without changing PYTHONPATH).
+    # `-Q` must list every queue `celery_app.py`'s `task_routes` sends
+    # work to — a Celery worker only consumes the default `celery` queue
+    # otherwise, so tasks routed to `orchestration`/`worker.text_image`
+    # would silently sit in Redis forever, never picked up.
+    command: ["celery", "-A", "workers.celery_app", "worker", "--loglevel=info", "--concurrency=4", "-Q", "orchestration,worker.text_image"]
     environment:
       <<: *backend-env
     volumes:
       - ./backend:/app
-      - ./workers:/workers
+      - ./workers:/app/workers
+    healthcheck:
+      # `celery inspect ping` round-trips through the broker to the
+      # running worker process itself — a stronger check than "is the
+      # container up" (e.g. it still catches a worker stuck importing a
+      # broken task module, which `docker compose ps` would otherwise
+      # report as healthy since the process is technically running).
+      test: ["CMD-SHELL", "celery -A workers.celery_app inspect ping -d celery@$$HOSTNAME --timeout 5 | grep -q OK"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
     depends_on:
       redis:
         condition: service_healthy
       postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      ollama:
         condition: service_healthy
 
   frontend:
@@ -123,6 +228,12 @@ services:
       - ./frontend:/app
       - /app/node_modules
       - /app/.next
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
       - backend
 
@@ -135,6 +246,11 @@ services:
       - "9090:9090"
     volumes:
       - ./infra/docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   grafana:
     image: grafana/grafana:latest
@@ -145,6 +261,11 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: brandium-dev
     volumes:
       - grafana_data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
 volumes:
   postgres_data:

@@ -42,7 +42,7 @@ class Report(TenantScopedMixin, UUIDPrimaryKeyMixin, Base):
 
     # Mutable review-overlay fields (Phase 0 §3.16 exception; lifecycle: unreviewed -> {approved, flagged})
     review_status: Mapped[ReportReviewStatus] = mapped_column(
-        Enum(ReportReviewStatus, name="report_review_status"),
+        Enum(ReportReviewStatus, name="report_review_status", values_callable=lambda obj: [e.value for e in obj]),
         nullable=False,
         default=ReportReviewStatus.UNREVIEWED,
     )
