@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -12,7 +12,7 @@ import {
   ListChecks,
   ScrollText,
 } from "lucide-react";
-import { use, useState } from "react";
+import { use, useEffect, useState } from "react";
 import {
   approveReport,
   brandHistoryLabel,
@@ -52,13 +52,17 @@ function scoreColor(score: number): string {
 export default function AnalysisRunPage({ params }: { params: Promise<{ brandId: string; runId: string }> }) {
   const { brandId, runId } = use(params);
   const [tab, setTab] = useState("evidence");
+  const queryClient = useQueryClient();
 
-  const runQuery = useQuery({
-    queryKey: ["analysis-run", runId],
-    queryFn: () => getAnalysisRun(runId),
-    refetchInterval: (query) =>
-      query.state.data && (query.state.data.status === "complete" || query.state.data.status === "failed") ? false : 1500,
-  });
+  // `run` metadata (asset_name, ids, final status/completed_at) never
+  // changes mid-flight — only `status`/`completed_at` update once, at
+  // the very end. Polling it on its own 1500ms interval for the whole
+  // run duration (as `progressQuery` below also does) doubled this
+  // page's request volume for no benefit; fetching it once and
+  // invalidating it exactly when `progressQuery` reaches a terminal
+  // stage gets the same final data in ~2 requests instead of ~1 per
+  // tick (a ~2.5 minute run was making ~100 redundant requests here).
+  const runQuery = useQuery({ queryKey: ["analysis-run", runId], queryFn: () => getAnalysisRun(runId) });
 
   const progressQuery = useQuery({
     queryKey: ["analysis-progress", runId],
@@ -67,6 +71,12 @@ export default function AnalysisRunPage({ params }: { params: Promise<{ brandId:
   });
 
   const stage = progressQuery.data?.stage ?? "queued";
+
+  useEffect(() => {
+    if (TERMINAL_STAGES.has(stage)) {
+      queryClient.invalidateQueries({ queryKey: ["analysis-run", runId] });
+    }
+  }, [stage, runId, queryClient]);
   const complete = stage === "complete";
   const failed = stage === "failed" || runQuery.data?.status === "failed";
 

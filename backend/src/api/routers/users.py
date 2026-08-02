@@ -62,6 +62,22 @@ class UserOut(BaseModel):
 
 @router.post("", response_model=UserOut, status_code=201)
 async def create_user(org_id: uuid.UUID, body: UserCreate, session: AsyncSession = Depends(get_session)) -> User:
+    # `User.email` is globally unique by design (one email is one real
+    # person's identity across the whole system, not per-Organization —
+    # see the domain model). Without this check, a second signup with an
+    # already-registered email (e.g. retrying Signup after an earlier
+    # attempt actually succeeded, confirmed live as a real user's actual
+    # sequence of events) fell through to Postgres's unique-constraint
+    # violation, an uncaught `IntegrityError` that surfaced to the
+    # browser as a bare "500 Internal Server Error" with no indication
+    # of what actually went wrong or what to do about it.
+    existing_email_user = (await session.execute(select(User).where(User.email == body.email))).scalars().first()
+    if existing_email_user is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"An account with email '{body.email}' already exists — log in instead of creating a new organization.",
+        )
+
     existing_count = (
         await session.execute(select(User).where(User.org_id == org_id))
     ).scalars().first()

@@ -29,6 +29,7 @@ from src.analysis_decision.decision_engine.policy_schema import policy_rules_fro
 from src.analysis_decision.decision_engine.schemas import AlignmentIndicator as EngineAlignment
 from src.analysis_decision.decision_engine.schemas import EvidenceItem
 from src.analysis_decision.domain.models import (
+    AlignmentIndicator,
     AnalysisRun,
     AnalysisRunStatus,
     AssertionOutcome,
@@ -229,7 +230,21 @@ async def finalize_run(
             analysis_run_id=run.id,
             assertion_id=item.assertion_id,
             observed_characteristic={"description": item.observed_characteristic},
-            alignment_indicator=item.alignment_indicator,
+            # `item.alignment_indicator` is a plain `str` off the fused
+            # observation (`evidence_fusion.py`'s dataclasses type it as
+            # `str`, sourced from the LLM judgment's raw text) — wrapped
+            # into the actual enum here so this in-memory `Evidence`
+            # object matches its own column's declared type
+            # (`Mapped[AlignmentIndicator]`) immediately, not only after
+            # a flush+expire+reload round-trip. Passing the raw string
+            # through unconverted was silently fine for the INSERT
+            # (SQLAlchemy's `Enum` type accepts a matching string at
+            # bind time) but left `ev.alignment_indicator` a `str` for
+            # every reader in the same transaction — confirmed live:
+            # this run's own Decision Engine handoff a few lines below
+            # calls `.value` on it and crashed with `AttributeError:
+            # 'str' object has no attribute 'value'`.
+            alignment_indicator=AlignmentIndicator(item.alignment_indicator),
             confidence=item.confidence,
             source_observation_ids=[str(i) for i in item.source_observation_ids],
         )

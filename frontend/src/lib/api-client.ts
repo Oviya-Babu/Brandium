@@ -3,7 +3,12 @@
  * anywhere in this file or its callers — every function is a real fetch
  * against the FastAPI backend built in this pass.
  */
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// Relative by default so the browser only ever talks to its own origin
+// — `next.config.mjs`'s rewrite proxies `/api/*` to the backend
+// server-side. `NEXT_PUBLIC_API_URL` remains a valid override (e.g. for
+// hitting the backend directly from outside Next.js), just no longer
+// the default.
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
 function actorHeaders(): HeadersInit {
   if (typeof window === "undefined") return {};

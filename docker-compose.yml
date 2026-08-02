@@ -191,7 +191,22 @@ services:
     # work to — a Celery worker only consumes the default `celery` queue
     # otherwise, so tasks routed to `orchestration`/`worker.text_image`
     # would silently sit in Redis forever, never picked up.
-    command: ["celery", "-A", "workers.celery_app", "worker", "--loglevel=info", "--concurrency=4", "-Q", "orchestration,worker.text_image"]
+    #
+    # `--concurrency=1`, not 4: every `execute_work_unit_task` call ends
+    # in one `LLMClient` request against the single Ollama instance
+    # configured for this stack, which is CPU-bound and cannot actually
+    # run two generations in parallel. With concurrency=4, two
+    # concurrent AnalysisRuns' work units were both dispatched at once,
+    # contended for that one CPU-bound model, and both blew past their
+    # own 300s soft time limit waiting on each other instead of on real
+    # work — confirmed live (two runs kicked off ~1 minute apart both
+    # failed with a `worker_failure` timeout, though each completes in
+    # ~120-150s alone). Concurrency=1 makes Celery queue work units
+    # correctly instead of contending for a resource that was never
+    # actually parallel; `dispatch_analysis_run`/`finalize_analysis_run`
+    # are sub-second orchestration calls so serializing the whole pool
+    # costs nothing.
+    command: ["celery", "-A", "workers.celery_app", "worker", "--loglevel=info", "--concurrency=1", "-Q", "orchestration,worker.text_image"]
     environment:
       <<: *backend-env
     volumes:
@@ -220,8 +235,15 @@ services:
 
   frontend:
     build: ./frontend
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+    # No `NEXT_PUBLIC_API_URL` override: the client defaults to the
+    # relative `/api`, proxied to `backend:8000` by `next.config.mjs`'s
+    # rewrite, so it works no matter how the browser reached this page
+    # (bare host, VSCode port-forward, tunnel, ...) — an absolute
+    # `http://localhost:8000` only worked when the browser's own
+    # "localhost" was literally this Docker host (confirmed live: a
+    # real user hit "Failed to fetch" on every API call, including
+    # Create Organization, from an access path where port 3000 was
+    # reachable but 8000 was not forwarded the same way).
     ports:
       - "3000:3000"
     volumes:

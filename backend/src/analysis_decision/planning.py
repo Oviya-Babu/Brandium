@@ -50,6 +50,32 @@ class WorkUnit:
     assertion_ids: list[uuid.UUID]
 
 
+_MAX_ASSERTIONS_PER_WORK_UNIT = 6
+"""One Work Unit is one LLM call judging every one of its Assertions in a
+single structured-output response (`workers/text_worker.py`,
+`workers/image_worker.py`). Against the CPU-only small model this stack
+runs, a single call covering every applicable Assertion for a category
+doesn't just get slow — confirmed live: a real 30-Assertion Visual
+Identity batch (Red Bull's compiled Genome) ran to completion without
+erroring or timing out, but its structured output only actually covered
+23 of the 30 Assertions it was asked to judge. The 7 it silently
+dropped had no judgment, no `no_signal` entry, and no failure — nothing
+at all — which Completeness Verification's fail-safe conservative
+default (Phase 3 §6, INV-31) then correctly treated as a
+`worker_failure`, blocking the Required category and the whole run.
+Chunking each worker type's Assertions into batches this size (matching
+a batch that has completed cleanly) trades one large unreliable call for
+several smaller reliable ones — the same total judging work, just sized
+to what this model can actually track in one response."""
+
+
+def _chunk_into_work_units(worker_type: WorkerType, assertion_ids: list[uuid.UUID]) -> list[WorkUnit]:
+    return [
+        WorkUnit(worker_type=worker_type, assertion_ids=assertion_ids[i : i + _MAX_ASSERTIONS_PER_WORK_UNIT])
+        for i in range(0, len(assertion_ids), _MAX_ASSERTIONS_PER_WORK_UNIT)
+    ]
+
+
 def build_execution_plan(applicable_set: ApplicableSet, modality: AssetModality) -> list[WorkUnit]:
     """Phase 3 §3: never run every worker against every asset — a
     text-only asset needs no ImageWorker; an image asset (without OCR in
@@ -67,8 +93,8 @@ def build_execution_plan(applicable_set: ApplicableSet, modality: AssetModality)
 
     plan: list[WorkUnit] = []
     if modality == AssetModality.TEXT and text_assertions:
-        plan.append(WorkUnit(worker_type=WorkerType.TEXT_WORKER, assertion_ids=text_assertions))
+        plan.extend(_chunk_into_work_units(WorkerType.TEXT_WORKER, text_assertions))
     if modality == AssetModality.IMAGE and image_assertions:
-        plan.append(WorkUnit(worker_type=WorkerType.IMAGE_WORKER, assertion_ids=image_assertions))
+        plan.extend(_chunk_into_work_units(WorkerType.IMAGE_WORKER, image_assertions))
 
     return plan

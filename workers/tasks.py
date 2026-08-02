@@ -91,13 +91,18 @@ logger = get_logger(__name__)
 
 _MAX_RETRIES = 2
 # CPU-only qwen3:4b decodes at ~7 tok/s (measured live). A Work Unit
-# batching several assertions into one LLM call needs headroom for that
-# — 120s was tuned against a single-assertion call and cuts off a
-# multi-assertion batch mid-generation (confirmed live: a 7-assertion
-# batch was still decoding, at 166+ tokens, when the old 120s soft limit
-# fired).
-_SOFT_TIME_LIMIT = 300
-_TIME_LIMIT = 330
+# batches every applicable Assertion for one worker type into a single
+# LLM call (`planning.py`'s `build_execution_plan` — one ImageWorker
+# call covers all in-scope Visual Identity assertions at once), so this
+# budget has to cover the largest real batch, not a typical one. 120s
+# was tuned against a single-assertion call and cut off a 7-assertion
+# batch mid-generation; 300s was then tuned against that 7-assertion
+# batch but still cut off a real 30-assertion Visual Identity batch
+# (Red Bull's compiled Genome) mid-generation, confirmed live: it hit
+# the soft limit at exactly 300.0s. Sized here for that batch size with
+# headroom, not just the smallest brand tested so far.
+_SOFT_TIME_LIMIT = 900
+_TIME_LIMIT = 930
 
 
 @asynccontextmanager
@@ -272,7 +277,28 @@ async def _execute_work_unit_async(run_id: str, org_id: str, work_unit_payload: 
 
 @app.task(name="workers.tasks.finalize_analysis_run")
 def finalize_analysis_run(work_unit_outcomes: list[dict], run_id: str, org_id: str) -> None:
-    asyncio.run(_finalize_analysis_run_async(work_unit_outcomes, run_id, org_id))
+    try:
+        asyncio.run(_finalize_analysis_run_async(work_unit_outcomes, run_id, org_id))
+    except Exception as exc:  # noqa: BLE001 - deliberately broad: this is the terminal
+        # step of the pipeline (Phase 4 §3 step 6) — an unhandled exception here
+        # previously left the AnalysisRun stuck in `running` forever (confirmed
+        # live: a Decision Engine handoff bug left a run spinning with no
+        # failure_reason and no way for the frontend to ever stop polling it).
+        # Same fail-safe shape as `compile_genome_draft_task`'s broad catch.
+        logger.error("analysis.finalize.failed", run_id=run_id, error=str(exc))
+        asyncio.run(_mark_run_failed(run_id, org_id, str(exc)))
+
+
+async def _mark_run_failed(run_id: str, org_id: str, error: str) -> None:
+    run_uuid = uuid.UUID(run_id)
+    async with _tenant_session(uuid.UUID(org_id)) as session:
+        run = await AnalysisRunRepository(session).get_by_id(run_uuid)
+        if run is not None and run.status != AnalysisRunStatus.COMPLETE:
+            run.status = AnalysisRunStatus.FAILED
+            run.failure_reason = f"Internal error during finalization: {error}"[:500]
+            run.completed_at = datetime.now(timezone.utc)
+            await session.commit()
+    execution_progress.set_stage(run_uuid, "failed")
 
 
 async def _finalize_analysis_run_async(work_unit_outcomes: list[dict], run_id: str, org_id: str) -> None:

@@ -29,6 +29,33 @@ from src.shared_kernel.types import new_id
 
 logger = get_logger(__name__)
 
+_TEXT_ONLY_SCOPE = {"modality": "text"}
+_IMAGE_ONLY_SCOPE = {"modality": "image"}
+"""Phase 3 §2's `applicability_scope` addendum, populated here at compile
+time rather than left null (its "universally applicable" default).
+`analysis_decision/planning.py`'s execution planner only ever dispatches
+an ImageWorker for Visual Identity assertions and only for image assets,
+and a TextWorker for every other category and only for text assets — it
+never evaluates Visual Identity against a text asset or the reverse.
+Left at the default (null = universally applicable), Applicability
+Determination still considered the *other* modality's Required
+categories in scope; since Planning then never produces a worker outcome
+for them, Completeness Verification's fail-safe default (Phase 3 §6:
+an in-scope Assertion with no outcome at all is conservatively treated
+as a `worker_failure`, INV-31) marked them failed — permanently blocking
+every single-modality asset from ever reaching `complete` whenever the
+Genome had real content in the other modality's Required categories
+(confirmed live: an image asset failed on Verbal Identity/Messaging &
+Positioning this way). Scoping each category to the one modality
+Planning actually evaluates it under closes that gap by making
+Applicability agree with Planning about what's in scope, rather than
+each layer silently assuming something different."""
+
+
+def _scope_for_category(category_name: GenomeCategoryName) -> dict | None:
+    return _IMAGE_ONLY_SCOPE if category_name == GenomeCategoryName.VISUAL_IDENTITY else _TEXT_ONLY_SCOPE
+
+
 _NEAR_DUPLICATE_THRESHOLD = 0.75
 """Implementation-level interpretation of Phase 1 §5's "genuine conflict"
 (not precisely defined by the architecture): two candidate Assertions in
@@ -193,7 +220,13 @@ async def compile_draft(
     category_by_name: dict[GenomeCategoryName, GenomeCategory] = {}
 
     for category_name, component_names in GENOME_TAXONOMY.items():
-        category = GenomeCategory(id=new_id(), org_id=org_id, genome_id=genome.id, name=category_name)
+        category = GenomeCategory(
+            id=new_id(),
+            org_id=org_id,
+            genome_id=genome.id,
+            name=category_name,
+            applicability_scope=_scope_for_category(category_name),
+        )
         categories.append(category)
         category_by_name[category_name] = category
         for component_name in component_names:
