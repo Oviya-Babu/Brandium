@@ -93,5 +93,5 @@ npm test   # Playwright
 - [docs/01-PRD/PRD.md](docs/01-PRD/PRD.md) — Product Requirements Document (canonical source of truth for product scope, workflows, and architecture)
 - [docs/01-PRD/02-Architecture/](docs/01-PRD/02-Architecture/) — architecture deep-dives
 - [docs/01-PRD/03-Diagrams/](docs/01-PRD/03-Diagrams/) — diagrams
-- [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) — current build status, known issues, and what's left
-- `CLAUDE.md` — repository conventions and guidance for AI-assisted development in this codebase
+
+
