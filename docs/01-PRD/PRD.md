@@ -1,8 +1,7 @@
 # Brandium
 ## Enterprise Brand Decision Intelligence Platform — Product Requirements Document
 
-**Document Version:** 1.0 (Baseline)
-**Status:** Frozen unless explicitly marked "Open"
+**Document Version:** 1.0 
 **Prepared For:** Engineering, Product, and Founding Team
 **Document Type:** Canonical Source of Truth
 **Classification:** Internal — Architecture Baseline
@@ -485,5 +484,3 @@ For each major capability, purpose/owner/value/dependencies/acceptance criteria 
 | Safe AI adoption | Evidence-first architecture, AI guardrails | Section 12, DR-002, Section 13 |
 
 ---
-
-*End of BrandGuard AI PRD v1.0. Companion document: Phase 0 — Business Domain Specification.*
