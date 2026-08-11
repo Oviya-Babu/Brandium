@@ -15,6 +15,10 @@ Any organization can onboard by supplying its own brand assets (guidelines, logo
 | ![Landing](docs/screenshots/01-landing.png) | ![Dashboard](docs/screenshots/04-dashboard.png) |
 | ![Brand Genome](docs/screenshots/06-brand-genome.png) | 
 | ![Upload](docs/screenshots/09-upload.png) |
+| ![Upload](docs/screenshots/how_it_works.jpeg) |
+| ![Upload](docs/screenshots/platform.jpeg) |
+
+
 
 More in [docs/screenshots/](docs/screenshots/).
 
