@@ -38,4 +38,16 @@ async def run_text_worker(*, asset_text: str, assertions: list[Assertion], llm: 
     judgments = [j for j in result.judgments if safe_uuid(j.assertion_id) in valid_ids]
     no_signal = [uid for aid in result.no_signal_assertion_ids if (uid := safe_uuid(aid)) in valid_ids]
 
+    # A schema-valid model response can still omit an assertion entirely.
+    # That means the worker completed its attempt but found no usable
+    # judgment for that assertion; it is not an infrastructure failure.
+    # Record the omission as attempted-no-signal so Completeness Verification
+    # can produce a decision from the evidence that *was* returned instead of
+    # failing the whole run.
+    covered_ids = {safe_uuid(j.assertion_id) for j in judgments} | set(no_signal)
+    omitted_ids = valid_ids - covered_ids
+    if omitted_ids:
+        logger.warning("text_worker.omitted_assertions", assertion_count=len(omitted_ids))
+        no_signal.extend(sorted(omitted_ids, key=str))
+
     return WorkerResult(succeeded=True, judgments=judgments, no_signal_assertion_ids=no_signal)
