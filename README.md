@@ -13,6 +13,7 @@ Any organization can onboard by supplying its own brand assets (guidelines, logo
 | | |
 |---|---|
 | ![Landing](docs/screenshots/01-landing.png) | ![Dashboard](docs/screenshots/04-dashboard.png) |
+![Dashboard](docs/screenshots/evidence.jpeg) | ![Dashboard](docs/screenshots/evidence2.jpeg) |
 | ![Brand Genome](docs/screenshots/06-brand-genome.png) | ![Upload](docs/screenshots/asset_analysis.jpeg)
 | ![Upload](docs/screenshots/09-upload.png) | ![Upload](docs/screenshots/evidence_message_positioning.jpeg)
 | ![Upload](docs/screenshots/how_it_works.jpeg) | ![Upload](docs/screenshots/evidence_verbal_identity.jpeg)
