@@ -2,7 +2,7 @@
 
 **Enterprise Brand Decision Intelligence Platform (BrandGuard AI)**
 
-Brandium is a multi-tenant SaaS platform that evaluates AI-generated and human-generated marketing content (text, images, video) against an organization's own codified brand identity, producing an explainable, evidence-traceable verdict on whether that content authentically represents the brand.
+Brandium is a multi-tenant platform that evaluates AI-generated and human-generated marketing content (text, images) against an organization's own codified brand identity, producing an explainable, evidence-traceable verdict on whether that content authentically represents the brand.
 
 It doesn't generate content and doesn't replace human creative judgment — it sits between content creation (ChatGPT, Midjourney, Firefly, internal creative teams, etc.) and publication, acting as a governance and validation layer.
 
