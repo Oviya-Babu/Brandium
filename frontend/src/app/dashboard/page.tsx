@@ -1,9 +1,8 @@
 "use client";
 
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
+  AlertCircle,
   ArrowRight,
   CheckCircle2,
   FileText,
@@ -15,10 +14,9 @@ import {
   ShieldCheck,
   Sparkles,
   TrendingUp,
-  AlertCircle,
+  type LucideIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useForm } from "react-hook-form";
 import { z } from "zod";
 
 import {
@@ -29,19 +27,14 @@ import {
   type Brand,
 } from "@/lib/api-client";
 
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Skeleton } from "@/components/ui/skeleton";
-
 import {
   Dialog,
   DialogContent,
@@ -49,663 +42,712 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
 
-const schema = z.object({
-  brandName: z.string().min(1, "Brand name is required"),
+const brandSchema = z.object({
+  name: z.string().min(2, "Brand name must be at least 2 characters."),
 });
 
-type FormValues = z.infer<typeof schema>;
+type MetricCardProps = {
+  title: string;
+  value: number;
+  subtitle: string;
+  icon: LucideIcon;
+  variant: "lavender" | "green" | "blue" | "peach";
+};
 
-/* -------------------------------------------------------------------------- */
-/* Brand Card                                                                 */
-/* -------------------------------------------------------------------------- */
-
-function BrandCard({ brand }: { brand: Brand }) {
-  const genomeReady = !!brand.active_genome_version_id;
-  const policyReady = !!brand.active_policy_version_id;
-
-  const initials = brand.name
-    .split(" ")
-    .map((word) => word[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-
-  return (
-    <a
-      href={`/brands/${brand.id}`}
-      className="group block h-full"
-    >
-      <Card className="relative h-full overflow-hidden border-[#e8e0f5] bg-white/90 shadow-[0_8px_30px_rgba(108,76,150,0.06)] transition-all duration-300 hover:-translate-y-1 hover:border-[#cfc0ee] hover:shadow-[0_16px_40px_rgba(108,76,150,0.12)]">
-        {/* subtle lavender decoration */}
-        <div className="pointer-events-none absolute right-0 top-0 h-32 w-32 rounded-full bg-[#eee7fb] opacity-50 blur-3xl transition-opacity group-hover:opacity-80" />
-
-        <CardHeader className="relative pb-4">
-          <div className="flex items-start justify-between gap-4">
-            <div className="flex items-center gap-4">
-              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-[#e4daf7] bg-[#f4effd] text-lg font-semibold text-[#7254c5] shadow-sm">
-                {initials}
-              </div>
-
-              <div>
-                <CardTitle className="text-lg font-semibold tracking-[-0.02em] text-[#202033]">
-                  {brand.name}
-                </CardTitle>
-
-                <CardDescription className="mt-1 text-sm text-[#858097]">
-                  Brand workspace
-                </CardDescription>
-              </div>
-            </div>
-
-            <Badge
-              className={
-                genomeReady && policyReady
-                  ? "border-[#d8f0e2] bg-[#effaf3] text-[#3b9a63]"
-                  : "border-[#f4dfbd] bg-[#fff8ec] text-[#c58a25]"
-              }
-            >
-              <span
-                className={`mr-1.5 h-1.5 w-1.5 rounded-full ${
-                  genomeReady && policyReady
-                    ? "bg-[#55b879]"
-                    : "bg-[#e7a735]"
-                }`}
-              />
-              {genomeReady && policyReady ? "Active" : "Setup"}
-            </Badge>
-          </div>
-        </CardHeader>
-
-        <CardContent className="relative">
-          <div className="grid grid-cols-2 gap-3">
-            {/* Genome */}
-            <div className="rounded-2xl border border-[#eeeaf5] bg-[#fbfaff] p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#9690a5]">
-                  Genome
-                </span>
-
-                {genomeReady ? (
-                  <CheckCircle2 className="h-4 w-4 text-[#55b879]" />
-                ) : (
-                  <AlertCircle className="h-4 w-4 text-[#e7a735]" />
-                )}
-              </div>
-
-              <p
-                className={`mt-3 text-sm font-semibold ${
-                  genomeReady ? "text-[#41965f]" : "text-[#9b95a7]"
-                }`}
-              >
-                {genomeReady ? "Active" : "Not active"}
-              </p>
-
-              <p className="mt-1 text-xs text-[#aaa5b5]">
-                {genomeReady
-                  ? "Source of truth ready"
-                  : "Configure your genome"}
-              </p>
-            </div>
-
-            {/* Policy */}
-            <div className="rounded-2xl border border-[#eeeaf5] bg-[#fbfaff] p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#9690a5]">
-                  Policy
-                </span>
-
-                {policyReady ? (
-                  <CheckCircle2 className="h-4 w-4 text-[#55b879]" />
-                ) : (
-                  <AlertCircle className="h-4 w-4 text-[#e7a735]" />
-                )}
-              </div>
-
-              <p
-                className={`mt-3 text-sm font-semibold ${
-                  policyReady ? "text-[#41965f]" : "text-[#b38a45]"
-                }`}
-              >
-                {policyReady ? "Active" : "Not configured"}
-              </p>
-
-              <p className="mt-1 text-xs text-[#aaa5b5]">
-                {policyReady
-                  ? "Brand rules active"
-                  : "Add policy to get started"}
-              </p>
-            </div>
-          </div>
-
-          {/* Bottom action */}
-          <div className="mt-5 flex items-center justify-between border-t border-[#eeeaf5] pt-5">
-            <div>
-              <p className="text-[11px] font-medium uppercase tracking-[0.1em] text-[#aaa5b5]">
-                Workspace
-              </p>
-              <p className="mt-1 text-sm font-medium text-[#4f4a5d]">
-                Ready to explore
-              </p>
-            </div>
-
-            <div className="flex items-center gap-2 text-sm font-semibold text-[#7355c7] transition-all group-hover:gap-3">
-              Open workspace
-              <ArrowRight className="h-4 w-4" />
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-    </a>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/* Metric Card                                                                */
-/* -------------------------------------------------------------------------- */
+const metricVariants = {
+  lavender: {
+    icon: "bg-violet-100 text-violet-600",
+    value: "text-violet-700",
+    border: "border-violet-100",
+  },
+  green: {
+    icon: "bg-emerald-100 text-emerald-600",
+    value: "text-emerald-700",
+    border: "border-emerald-100",
+  },
+  blue: {
+    icon: "bg-sky-100 text-sky-600",
+    value: "text-sky-700",
+    border: "border-sky-100",
+  },
+  peach: {
+    icon: "bg-orange-100 text-orange-600",
+    value: "text-orange-700",
+    border: "border-orange-100",
+  },
+};
 
 function MetricCard({
-  icon: Icon,
+  title,
   value,
-  label,
-  description,
+  subtitle,
+  icon: Icon,
   variant,
-}: {
-  icon: typeof Sparkles;
-  value: number;
-  label: string;
-  description: string;
-  variant: "lavender" | "green" | "blue" | "peach";
-}) {
-  const styles = {
-    lavender: {
-      icon: "bg-[#f1eafd] text-[#7657ca]",
-      glow: "bg-[#eee5fb]",
-    },
-    green: {
-      icon: "bg-[#edf8f1] text-[#55a975]",
-      glow: "bg-[#e5f6ec]",
-    },
-    blue: {
-      icon: "bg-[#edf5fb] text-[#5797c7]",
-      glow: "bg-[#e5f1fa]",
-    },
-    peach: {
-      icon: "bg-[#fff4ed] text-[#d9955f]",
-      glow: "bg-[#fff0e7]",
-    },
-  };
+}: MetricCardProps) {
+  const styles = metricVariants[variant];
 
   return (
-    <Card className="relative overflow-hidden border-[#ebe6f2] bg-white shadow-[0_6px_24px_rgba(80,60,120,0.045)]">
-      <div
-        className={`absolute -right-8 -top-8 h-24 w-24 rounded-full blur-2xl ${styles[variant].glow}`}
-      />
+    <Card
+      className={`border ${styles.border} bg-white shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md`}
+    >
+      <CardContent className="p-5">
+        <div className="flex items-start justify-between">
+          <div>
+            <p className="text-sm font-medium text-slate-500">{title}</p>
 
-      <CardContent className="relative flex items-center gap-4 p-5">
-        <div
-          className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl ${styles[variant].icon}`}
-        >
-          <Icon className="h-5 w-5" />
-        </div>
+            <p
+              className={`mt-2 text-3xl font-semibold tracking-tight ${styles.value}`}
+            >
+              {value}
+            </p>
 
-        <div className="min-w-0">
-          <p className="text-2xl font-semibold tracking-[-0.03em] text-[#242236]">
-            {value}
-          </p>
+            <p className="mt-1 text-xs text-slate-400">{subtitle}</p>
+          </div>
 
-          <p className="mt-0.5 text-sm font-medium text-[#514b60]">
-            {label}
-          </p>
-
-          <p className="mt-0.5 text-xs text-[#a09aaa]">
-            {description}
-          </p>
+          <div
+            className={`flex h-10 w-10 items-center justify-center rounded-xl ${styles.icon}`}
+          >
+            <Icon className="h-5 w-5" />
+          </div>
         </div>
       </CardContent>
     </Card>
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/* Dashboard                                                                  */
-/* -------------------------------------------------------------------------- */
+function BrandCard({
+  brand,
+  onOpen,
+}: {
+  brand: Brand;
+  onOpen: () => void;
+}) {
+  const initials =
+    brand.name
+      .split(" ")
+      .map((word: string) => word[0])
+      .join("")
+      .slice(0, 2)
+      .toUpperCase() || "BR";
+
+  const genomeReady = Boolean(brand.active_genome_version_id);
+
+  const policyReady = Boolean(brand.active_policy_version_id);
+
+  return (
+    <Card className="group border-slate-200/80 bg-white shadow-sm transition-all duration-200 hover:-translate-y-1 hover:border-violet-200 hover:shadow-lg">
+      <CardHeader className="pb-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-violet-100 text-sm font-semibold text-violet-700">
+              {initials}
+            </div>
+
+            <div>
+              <CardTitle className="text-base font-semibold text-slate-900">
+                {brand.name}
+              </CardTitle>
+
+              <p className="mt-1 text-xs text-slate-400">
+                Brand intelligence workspace
+              </p>
+            </div>
+          </div>
+
+          <Badge
+            variant="secondary"
+            className={
+              genomeReady
+                ? "bg-emerald-50 text-emerald-700"
+                : "bg-amber-50 text-amber-700"
+            }
+          >
+            {genomeReady ? "Active" : "Setup"}
+          </Badge>
+        </div>
+      </CardHeader>
+
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-3">
+            <div className="flex items-center gap-2">
+              <GitBranch className="h-4 w-4 text-violet-500" />
+
+              <span className="text-xs font-medium text-slate-500">
+                Genome
+              </span>
+            </div>
+
+            <div className="mt-2 flex items-center gap-1.5">
+              {genomeReady ? (
+                <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+              ) : (
+                <AlertCircle className="h-4 w-4 text-amber-500" />
+              )}
+
+              <span className="text-sm font-medium text-slate-700">
+                {genomeReady ? "Ready" : "Not configured"}
+              </span>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-3">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-sky-500" />
+
+              <span className="text-xs font-medium text-slate-500">
+                Policies
+              </span>
+            </div>
+
+            <div className="mt-2 flex items-center gap-1.5">
+              {policyReady ? (
+                <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+              ) : (
+                <AlertCircle className="h-4 w-4 text-amber-500" />
+              )}
+
+              <span className="text-sm font-medium text-slate-700">
+                {policyReady ? "Active" : "Not configured"}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <Button
+          onClick={onOpen}
+          variant="outline"
+          className="w-full border-slate-200 text-slate-700 hover:border-violet-200 hover:bg-violet-50 hover:text-violet-700"
+        >
+          Open brand
+          <ArrowRight className="ml-2 h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function DashboardPage() {
-  const queryClient = useQueryClient();
-
   const [orgId, setOrgId] = useState<string | null>(null);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+
+  const [organization, setOrganization] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+
+  const [brands, setBrands] = useState<Brand[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [brandName, setBrandName] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    setOrgId(localStorage.getItem("brandium_org_id"));
+    if (typeof window === "undefined") return;
+
+    const storedOrgId = window.localStorage.getItem("brandium_org_id");
+
+    if (storedOrgId) {
+      setOrgId(storedOrgId);
+    } else {
+      setLoading(false);
+    }
   }, []);
 
-  const orgQuery = useQuery({
-    queryKey: ["organization", orgId],
-    queryFn: () => getOrganization(orgId!),
-    enabled: !!orgId,
-  });
-
-  const brandsQuery = useQuery({
-    queryKey: ["brands", orgId],
-    queryFn: () => listBrands(orgId!),
-    enabled: !!orgId,
-  });
-
-  const {
-    register,
-    handleSubmit,
-    reset,
-    formState: { errors, isSubmitting },
-  } = useForm<FormValues>({
-    resolver: zodResolver(schema),
-  });
-
-  async function onCreateBrand(values: FormValues) {
+  useEffect(() => {
     if (!orgId) return;
 
-    setError(null);
+    let cancelled = false;
+
+    async function loadDashboard(currentOrgId: string) {
+      try {
+        setLoading(true);
+        setError("");
+
+        const [org, brandList] = await Promise.all([
+          getOrganization(currentOrgId),
+          listBrands(currentOrgId),
+        ]);
+
+        if (!cancelled) {
+          setOrganization(org);
+          setBrands(brandList);
+        }
+      } catch {
+        if (!cancelled) {
+          setError("Unable to load dashboard data.");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void loadDashboard(orgId);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [orgId]);
+
+  const filteredBrands = useMemo(() => {
+    const query = search.trim().toLowerCase();
+
+    if (!query) return brands;
+
+    return brands.filter((brand: Brand) =>
+      brand.name.toLowerCase().includes(query)
+    );
+  }, [brands, search]);
+
+  const activeGenomes = useMemo(
+    () =>
+      brands.filter((brand: Brand) =>
+        Boolean(brand.active_genome_version_id)
+      ).length,
+    [brands]
+  );
+
+  const activePolicies = useMemo(
+    () =>
+      brands.filter((brand: Brand) =>
+        Boolean(brand.active_policy_version_id)
+      ).length,
+    [brands]
+  );
+
+  const policyAlerts = Math.max(brands.length - activePolicies, 0);
+
+  async function handleCreateBrand() {
+    const parsed = brandSchema.safeParse({
+      name: brandName.trim(),
+    });
+
+    if (!parsed.success) {
+      setError(parsed.error.issues[0]?.message || "Invalid brand name.");
+      return;
+    }
+
+    if (!orgId) {
+      setError("Organization not found. Please sign in again.");
+      return;
+    }
 
     try {
+      setCreating(true);
+      setError("");
+
       const workspace = await createWorkspace(
         orgId,
-        `${values.brandName} Workspace`
+        `${parsed.data.name} Workspace`
       );
 
       const brand = await createBrand(
         workspace.id,
-        values.brandName
+        parsed.data.name
       );
 
-      await queryClient.invalidateQueries({
-        queryKey: ["brands", orgId],
-      });
-
-      reset();
-      setDialogOpen(false);
-
-      window.location.href = `/brands/${brand.id}`;
-    } catch (err) {
-      setError((err as Error).message);
+      setBrands((current) => [...current, brand]);
+      setBrandName("");
+      setIsCreateOpen(false);
+    } catch {
+      setError("Unable to create the brand. Please try again.");
+    } finally {
+      setCreating(false);
     }
   }
 
-  /* ---------------------------------------------------------------------- */
-  /* No session                                                              */
-  /* ---------------------------------------------------------------------- */
+  function openBrand(brand: Brand) {
+    window.location.href = `/brands/${brand.id}`;
+  }
 
   if (!orgId) {
     return (
-      <div className="flex min-h-[70vh] items-center justify-center px-6">
-        <Card className="w-full max-w-md border-[#e8e0f5] bg-white shadow-[0_20px_60px_rgba(100,75,150,0.08)]">
-          <CardContent className="flex flex-col items-center px-8 py-12 text-center">
-            <div className="flex h-16 w-16 items-center justify-center rounded-3xl bg-[#f1eafd]">
-              <ShieldCheck className="h-7 w-7 text-[#7355c7]" />
-            </div>
+      <div className="min-h-screen bg-[#faf9ff] p-6 md:p-10">
+        <div className="mx-auto flex min-h-[80vh] max-w-5xl items-center justify-center">
+          <Card className="w-full max-w-xl border-violet-100 bg-white shadow-lg">
+            <CardContent className="p-8 text-center">
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-violet-100">
+                <Sparkles className="h-7 w-7 text-violet-600" />
+              </div>
 
-            <h1 className="mt-6 text-xl font-semibold text-[#242236]">
-              Welcome to BrandGuard
-            </h1>
+              <h1 className="mt-5 text-2xl font-semibold text-slate-900">
+                Welcome to BrandGuard AI
+              </h1>
 
-            <p className="mt-2 max-w-sm text-sm leading-6 text-[#8f899d]">
-              Log in or create an organization to start monitoring your
-              brand identity.
-            </p>
-
-            <div className="mt-7 flex gap-3">
-              <Button
-                variant="outline"
-                asChild
-                className="border-[#ded5ed] hover:bg-[#f8f5fc]"
-              >
-                <a href="/login">Log in</a>
-              </Button>
+              <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">
+                Create or select an organization to start evaluating your
+                brand identity with evidence-driven intelligence.
+              </p>
 
               <Button
-                asChild
-                className="bg-[#7657ca] text-white shadow-[0_6px_18px_rgba(118,87,202,0.2)] hover:bg-[#6749b9]"
+                className="mt-6 bg-violet-600 text-white hover:bg-violet-700"
+                onClick={() => {
+                  window.location.href = "/signup";
+                }}
               >
-                <a href="/signup">Create organization</a>
+                Get started
+                <ArrowRight className="ml-2 h-4 w-4" />
               </Button>
-            </div>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        </div>
       </div>
     );
   }
 
-  const brands = brandsQuery.data ?? [];
-
-  const filteredBrands = useMemo(() => {
-    const value = search.trim().toLowerCase();
-
-    if (!value) return brands;
-
-    return brands.filter((brand) =>
-      brand.name.toLowerCase().includes(value)
-    );
-  }, [brands, search]);
-
-  const activeGenomes = brands.filter(
-    (brand) => !!brand.active_genome_version_id
-  ).length;
-
-  const activePolicies = brands.filter(
-    (brand) => !!brand.active_policy_version_id
-  ).length;
-
-  const policyAlerts = Math.max(brands.length - activePolicies, 0);
-
-  /* ---------------------------------------------------------------------- */
-  /* Main dashboard                                                          */
-  /* ---------------------------------------------------------------------- */
-
   return (
-    <main className="min-h-screen bg-[#faf9fc]">
-      <div className="mx-auto max-w-[1400px] px-5 py-7 sm:px-8 lg:px-10">
-        {/* ---------------------------------------------------------------- */}
-        {/* Header                                                            */}
-        {/* ---------------------------------------------------------------- */}
-
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+    <div className="min-h-screen bg-[#faf9ff]">
+      <main className="mx-auto max-w-7xl px-5 py-7 md:px-8 md:py-9">
+        <section className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
           <div>
-            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-[#9a91aa]">
-              <Sparkles className="h-3.5 w-3.5 text-[#8b6ed1]" />
-              {orgQuery.data?.name ?? "Organization"}
+            <div className="flex items-center gap-2">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-100">
+                <Sparkles className="h-5 w-5 text-violet-600" />
+              </div>
+
+              <span className="text-sm font-semibold text-violet-600">
+                BrandGuard AI
+              </span>
             </div>
 
-            <h1 className="mt-2 text-3xl font-semibold tracking-[-0.035em] text-[#242236] sm:text-[34px]">
+            <h1 className="mt-4 text-3xl font-semibold tracking-tight text-slate-900 md:text-4xl">
               Brand intelligence
             </h1>
 
-            <p className="mt-2 max-w-xl text-sm leading-6 text-[#898398]">
-              Monitor how consistently your brands are represented across
-              content and campaigns.
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
+              Manage your brands, monitor their identity foundations, and
+              prepare them for evidence-based content evaluation.
             </p>
+
+            {organization?.name && (
+              <p className="mt-2 text-xs font-medium text-slate-400">
+                Organization: {organization.name}
+              </p>
+            )}
           </div>
 
-          <div className="flex flex-col gap-3 sm:flex-row">
-            {/* Search */}
-            <div className="relative">
-              <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#aaa4b5]" />
-
-              <Input
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search brands..."
-                className="h-11 w-full border-[#e5dfed] bg-white pl-10 text-sm shadow-sm placeholder:text-[#aaa4b5] focus-visible:border-[#bca9e5] focus-visible:ring-[#e8def8] sm:w-60"
-              />
-            </div>
-
-            {/* Create brand */}
-            <Dialog
-              open={dialogOpen}
-              onOpenChange={setDialogOpen}
-            >
-              <DialogTrigger asChild>
-                <Button className="h-11 bg-[#7657ca] px-5 text-white shadow-[0_7px_20px_rgba(118,87,202,0.18)] hover:bg-[#6749b9]">
-                  <Plus className="h-4 w-4" />
-                  New brand
-                </Button>
-              </DialogTrigger>
-
-              <DialogContent className="border-[#e8e0f5] bg-white">
-                <form onSubmit={handleSubmit(onCreateBrand)}>
-                  <DialogHeader>
-                    <DialogTitle className="text-[#242236]">
-                      Create a brand
-                    </DialogTitle>
-
-                    <DialogDescription className="text-[#8d879b]">
-                      Creates a Workspace and Brand within your organization.
-                    </DialogDescription>
-                  </DialogHeader>
-
-                  <div className="py-5">
-                    <Label
-                      htmlFor="brandName"
-                      className="text-[#514b60]"
-                    >
-                      Brand name
-                    </Label>
-
-                    <Input
-                      id="brandName"
-                      placeholder="e.g. Red Bull"
-                      className="mt-2 border-[#e5dfed] focus-visible:border-[#bca9e5] focus-visible:ring-[#e8def8]"
-                      {...register("brandName")}
-                    />
-
-                    {errors.brandName && (
-                      <p className="mt-1.5 text-xs text-red-500">
-                        {errors.brandName.message}
-                      </p>
-                    )}
-
-                    {error && (
-                      <p className="mt-2 text-xs text-red-500">
-                        {error}
-                      </p>
-                    )}
-                  </div>
-
-                  <DialogFooter>
-                    <Button
-                      type="submit"
-                      disabled={isSubmitting}
-                      className="bg-[#7657ca] hover:bg-[#6749b9]"
-                    >
-                      {isSubmitting && (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      )}
-                      Create brand
-                    </Button>
-                  </DialogFooter>
-                </form>
-              </DialogContent>
-            </Dialog>
-          </div>
-        </div>
-
-        {/* ---------------------------------------------------------------- */}
-        {/* Metrics                                                           */}
-        {/* ---------------------------------------------------------------- */}
-
-        <section className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <MetricCard
-            icon={LayoutGrid}
-            value={brands.length}
-            label="Total brands"
-            description="Across all workspaces"
-            variant="lavender"
-          />
-
-          <MetricCard
-            icon={GitBranch}
-            value={activeGenomes}
-            label="Active genomes"
-            description="Currently configured"
-            variant="green"
-          />
-
-          <MetricCard
-            icon={Activity}
-            value={activePolicies}
-            label="Active policies"
-            description="Brand rules in use"
-            variant="blue"
-          />
-
-          <MetricCard
-            icon={AlertCircle}
-            value={policyAlerts}
-            label="Needs attention"
-            description="Incomplete configuration"
-            variant="peach"
-          />
+          <Button
+            onClick={() => {
+              setError("");
+              setBrandName("");
+              setIsCreateOpen(true);
+            }}
+            className="bg-violet-600 text-white shadow-sm hover:bg-violet-700"
+          >
+            <Plus className="mr-2 h-4 w-4" />
+            New brand
+          </Button>
         </section>
 
-        {/* ---------------------------------------------------------------- */}
-        {/* Brands section                                                    */}
-        {/* ---------------------------------------------------------------- */}
-
-        <section className="mt-10">
-          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#9b93a9]">
-                Workspaces
-              </p>
-
-              <h2 className="mt-1.5 text-2xl font-semibold tracking-[-0.025em] text-[#29253a]">
-                Your brands
-              </h2>
-
-              <p className="mt-1 text-sm text-[#8f899d]">
-                Manage your brand identity and evaluation rules.
-              </p>
-            </div>
-
-            <div className="hidden items-center gap-1 rounded-xl border border-[#e6dfef] bg-white p-1 sm:flex">
-              <button className="flex items-center gap-2 rounded-lg bg-[#f1eafd] px-3 py-2 text-xs font-semibold text-[#7254c5]">
-                <LayoutGrid className="h-3.5 w-3.5" />
-                Grid
-              </button>
-
-              <button className="px-3 py-2 text-xs font-medium text-[#9992a4]">
-                List
-              </button>
-            </div>
-          </div>
-
-          {/* Loading */}
-          {brandsQuery.isLoading && (
-            <div className="grid gap-5 md:grid-cols-2">
-              {[0, 1].map((item) => (
-                <Card
-                  key={item}
-                  className="border-[#e8e0f5] bg-white"
-                >
-                  <CardContent className="space-y-5 p-6">
-                    <div className="flex gap-4">
-                      <Skeleton className="h-14 w-14 rounded-2xl" />
-
-                      <div className="space-y-2">
-                        <Skeleton className="h-5 w-32" />
-                        <Skeleton className="h-4 w-24" />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <Skeleton className="h-28 rounded-2xl" />
-                      <Skeleton className="h-28 rounded-2xl" />
-                    </div>
-
-                    <Skeleton className="h-10 rounded-xl" />
+        <section className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {loading ? (
+            <>
+              {[1, 2, 3, 4].map((item) => (
+                <Card key={item} className="border-slate-100 bg-white">
+                  <CardContent className="p-5">
+                    <Skeleton className="h-5 w-28" />
+                    <Skeleton className="mt-3 h-9 w-16" />
+                    <Skeleton className="mt-2 h-4 w-36" />
                   </CardContent>
                 </Card>
               ))}
+            </>
+          ) : (
+            <>
+              <MetricCard
+                title="Total brands"
+                value={brands.length}
+                subtitle="Across this organization"
+                icon={Activity}
+                variant="lavender"
+              />
+
+              <MetricCard
+                title="Active genomes"
+                value={activeGenomes}
+                subtitle="Brand identity foundations"
+                icon={GitBranch}
+                variant="green"
+              />
+
+              <MetricCard
+                title="Active policies"
+                value={activePolicies}
+                subtitle="Governance rules configured"
+                icon={ShieldCheck}
+                variant="blue"
+              />
+
+              <MetricCard
+                title="Needs attention"
+                value={policyAlerts}
+                subtitle="Incomplete configuration"
+                icon={AlertCircle}
+                variant="peach"
+              />
+            </>
+          )}
+        </section>
+
+        <section className="mt-10">
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-xl font-semibold text-slate-900">
+                Your brands
+              </h2>
+
+              <p className="mt-1 text-sm text-slate-500">
+                Each brand has its own identity foundation and decision
+                context.
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+
+                <Input
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Search brands..."
+                  className="w-full border-slate-200 bg-white pl-9 sm:w-64"
+                />
+              </div>
+
+              <div className="flex items-center rounded-lg border border-slate-200 bg-white p-1">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className="h-8 bg-violet-50 text-violet-700"
+                >
+                  <LayoutGrid className="mr-1.5 h-4 w-4" />
+                  Grid
+                </Button>
+
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-8 text-slate-400"
+                >
+                  List
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          {error && (
+            <div className="mt-5 rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-600">
+              {error}
             </div>
           )}
 
-          {/* Empty */}
-          {brandsQuery.data &&
-            brandsQuery.data.length === 0 && (
-              <Card className="border-dashed border-[#dcd1ed] bg-white">
-                <CardContent className="flex flex-col items-center justify-center py-16 text-center">
-                  <div className="flex h-16 w-16 items-center justify-center rounded-3xl bg-[#f1eafd]">
-                    <Sparkles className="h-7 w-7 text-[#795bc9]" />
+          <div className="mt-5">
+            {loading ? (
+              <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+                {[1, 2, 3].map((item) => (
+                  <Card key={item} className="border-slate-100 bg-white">
+                    <CardContent className="p-6">
+                      <Skeleton className="h-11 w-11 rounded-xl" />
+                      <Skeleton className="mt-4 h-5 w-40" />
+                      <Skeleton className="mt-2 h-4 w-56" />
+
+                      <div className="mt-6 grid grid-cols-2 gap-3">
+                        <Skeleton className="h-20 rounded-xl" />
+                        <Skeleton className="h-20 rounded-xl" />
+                      </div>
+
+                      <Skeleton className="mt-5 h-10 w-full" />
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            ) : filteredBrands.length > 0 ? (
+              <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+                {filteredBrands.map((brand: Brand) => (
+                  <BrandCard
+                    key={brand.id}
+                    brand={brand}
+                    onOpen={() => openBrand(brand)}
+                  />
+                ))}
+              </div>
+            ) : brands.length === 0 ? (
+              <Card className="border-dashed border-violet-200 bg-white">
+                <CardContent className="flex flex-col items-center justify-center px-6 py-14 text-center">
+                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-violet-100">
+                    <Plus className="h-6 w-6 text-violet-600" />
                   </div>
 
-                  <h3 className="mt-5 text-lg font-semibold text-[#2b2739]">
-                    Your brand workspace starts here
+                  <h3 className="mt-5 text-lg font-semibold text-slate-900">
+                    Create your first brand
                   </h3>
 
-                  <p className="mt-2 max-w-md text-sm leading-6 text-[#918a9e]">
-                    Create your first brand and build the structured
-                    identity that BrandGuard will use for evaluation.
+                  <p className="mt-2 max-w-md text-sm leading-6 text-slate-500">
+                    Start by adding a brand. You can then build its Brand
+                    Genome and configure the policies used during evaluation.
                   </p>
 
                   <Button
-                    onClick={() => setDialogOpen(true)}
-                    className="mt-6 bg-[#7657ca] hover:bg-[#6749b9]"
+                    onClick={() => {
+                      setError("");
+                      setBrandName("");
+                      setIsCreateOpen(true);
+                    }}
+                    className="mt-5 bg-violet-600 hover:bg-violet-700"
                   >
-                    <Plus className="h-4 w-4" />
-                    Create your first brand
+                    <Plus className="mr-2 h-4 w-4" />
+                    Create brand
                   </Button>
                 </CardContent>
               </Card>
-            )}
+            ) : (
+              <Card className="border-slate-100 bg-white">
+                <CardContent className="flex flex-col items-center justify-center px-6 py-14 text-center">
+                  <Search className="h-7 w-7 text-slate-300" />
 
-          {/* Search empty */}
-          {brandsQuery.data &&
-            brandsQuery.data.length > 0 &&
-            filteredBrands.length === 0 && (
-              <Card className="border-[#e8e0f5] bg-white">
-                <CardContent className="flex flex-col items-center py-12 text-center">
-                  <Search className="h-7 w-7 text-[#a59db2]" />
-
-                  <p className="mt-4 text-sm font-medium text-[#4e485c]">
+                  <h3 className="mt-4 text-base font-semibold text-slate-900">
                     No brands found
-                  </p>
+                  </h3>
 
-                  <p className="mt-1 text-xs text-[#9d97a8]">
+                  <p className="mt-1 text-sm text-slate-500">
                     Try a different search term.
                   </p>
                 </CardContent>
               </Card>
             )}
-
-          {/* Brands */}
-          {filteredBrands.length > 0 && (
-            <div className="grid gap-5 md:grid-cols-2">
-              {filteredBrands.map((brand) => (
-                <BrandCard
-                  key={brand.id}
-                  brand={brand}
-                />
-              ))}
-            </div>
-          )}
+          </div>
         </section>
 
-        {/* ---------------------------------------------------------------- */}
-        {/* Product philosophy section                                       */}
-        /* ---------------------------------------------------------------- */}
+        <section className="mt-10">
+          <Card className="overflow-hidden border-violet-100 bg-gradient-to-br from-violet-50 via-white to-sky-50 shadow-sm">
+            <CardContent className="p-6 md:p-7">
+              <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
+                <div className="max-w-2xl">
+                  <div className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-violet-700 shadow-sm ring-1 ring-violet-100">
+                    <Sparkles className="h-3.5 w-3.5" />
+                    Product philosophy
+                  </div>
 
-        <section className="mt-8">
-          <Card className="overflow-hidden border-[#e4dbf1] bg-gradient-to-r from-[#f5f0fc] via-white to-[#f8f5fc] shadow-[0_8px_30px_rgba(100,75,150,0.05)]">
-            <CardContent className="flex flex-col gap-5 p-6 sm:flex-row sm:items-center sm:justify-between sm:p-7">
-              <div className="flex items-start gap-4">
-                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#ebe1fa] text-[#7657ca]">
-                  <TrendingUp className="h-5 w-5" />
-                </div>
+                  <h2 className="mt-4 text-xl font-semibold text-slate-900">
+                    Evidence before AI.
+                  </h2>
 
-                <div>
-                  <p className="text-sm font-semibold text-[#393347]">
-                    Evidence before AI
-                  </p>
-
-                  <p className="mt-1 max-w-2xl text-sm leading-6 text-[#8b8498]">
-                    BrandGuard evaluates content against your structured
-                    Brand Genome so every decision can be traced back to
-                    evidence.
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    BrandGuard separates evidence extraction from decision
+                    making. Specialized workers produce observable evidence,
+                    the deterministic decision engine evaluates it, and AI
+                    helps explain the result in a clear human-readable way.
                   </p>
                 </div>
-              </div>
 
-              <div className="flex shrink-0 items-center gap-2 text-xs font-semibold text-[#7657ca]">
-                <FileText className="h-4 w-4" />
-                Evidence-first evaluation
+                <div className="grid grid-cols-2 gap-3 md:min-w-[300px]">
+                  <div className="rounded-2xl border border-white bg-white/80 p-4 shadow-sm">
+                    <FileText className="h-5 w-5 text-violet-500" />
+
+                    <p className="mt-3 text-sm font-semibold text-slate-800">
+                      Traceable
+                    </p>
+
+                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                      Decisions connect back to evidence.
+                    </p>
+                  </div>
+
+                  <div className="rounded-2xl border border-white bg-white/80 p-4 shadow-sm">
+                    <TrendingUp className="h-5 w-5 text-sky-500" />
+
+                    <p className="mt-3 text-sm font-semibold text-slate-800">
+                      Measurable
+                    </p>
+
+                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                      Brand alignment becomes observable.
+                    </p>
+                  </div>
+                </div>
               </div>
             </CardContent>
           </Card>
         </section>
-      </div>
-    </main>
+      </main>
+
+      <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
+        <DialogContent className="border-violet-100 bg-white sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl text-slate-900">
+              Create a new brand
+            </DialogTitle>
+
+            <DialogDescription className="text-slate-500">
+              Add a brand to your organization. You can configure its identity
+              foundation after creation.
+            </DialogDescription>
+          </DialogHeader>
+
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleCreateBrand();
+            }}
+            className="space-y-5"
+          >
+            <div className="space-y-2">
+              <Label htmlFor="brand-name">Brand name</Label>
+
+              <Input
+                id="brand-name"
+                value={brandName}
+                onChange={(event) => setBrandName(event.target.value)}
+                placeholder="e.g. Nike"
+                className="border-slate-200 focus-visible:ring-violet-400"
+              />
+            </div>
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setIsCreateOpen(false);
+                  setBrandName("");
+                  setError("");
+                }}
+                disabled={creating}
+              >
+                Cancel
+              </Button>
+
+              <Button
+                type="submit"
+                disabled={creating}
+                className="bg-violet-600 text-white hover:bg-violet-700"
+              >
+                {creating ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Creating...
+                  </>
+                ) : (
+                  <>
+                    <Plus className="mr-2 h-4 w-4" />
+                    Create brand
+                  </>
+                )}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
